@@ -30,6 +30,19 @@ const materialesSchema = new mongoose.Schema({
         required: true,
         min: 0
     },
+    // ID usado por el cotizador frontend (ej: "melamina", "mdf", "correderas")
+    idCotizador: {
+        type: String,
+        trim: true,
+        sparse: true,
+        unique: true
+    },
+    // Precio por metro lineal (solo para materiales base: melamina, mdf, tech)
+    precioPorMetro: {
+        type: Number,
+        min: 0,
+        default: null
+    },
     categoria: {
         type: String,
         required: true,
