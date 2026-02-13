@@ -28,7 +28,6 @@ async function seed() {
                 {
                     nombre: m.nombre,
                     precioPorMetro: m.precioPorMetro,
-                    precioUnitario: m.precioPorMetro,
                     unidadMedida: m.unidadMedida,
                     categoria: m.categoria,
                     idCotizador: m.idCotizador,

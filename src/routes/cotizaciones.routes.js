@@ -19,7 +19,7 @@ router.get('/config', getCotizadorConfig);
 // Requieren autenticación
 router.get('/', authRequired, listarCotizaciones);
 router.post('/borrador', authRequired, validateSchema(cotizacionBorradorSchema), guardarBorrador);
-router.put('/borrador/:id', authRequired, guardarBorrador);
+router.put('/borrador/:id', authRequired, validateSchema(cotizacionBorradorSchema), guardarBorrador);
 router.get('/:id', authRequired, obtenerCotizacion);
 router.post('/:id/pdf-cliente', authRequired, generarPdfCliente);
 router.post('/:id/hoja-taller', authRequired, generarHojaTaller);

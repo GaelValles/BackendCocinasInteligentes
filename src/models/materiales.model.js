@@ -27,8 +27,9 @@ const materialesSchema = new mongoose.Schema({
     },
     precioUnitario: {
         type: Number,
-        required: true,
-        min: 0
+        required: function () { return this.precioPorMetro == null; },
+        min: 0,
+        default: null
     },
     // ID usado por el cotizador frontend (ej: "melamina", "mdf", "correderas")
     idCotizador: {
