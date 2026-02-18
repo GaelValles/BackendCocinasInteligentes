@@ -14,7 +14,7 @@ export const register = async (req, res) => {
             telefono,
             rol,
             password: passwordHash,
-            carros: [] // Inicializamos el array de carros vacío
+        
         });
 
         const AdminSaved = await newAdmin.save();
@@ -41,8 +41,7 @@ export const subirUser = async (req, res) => {
             correo,
             telefono,
             rol,
-            password: passwordHash,
-            carros: []
+            password: passwordHash
         });
 
         const AdminSaved = await newAdmin.save();
