@@ -5,6 +5,7 @@ import {
     obtenerOrdenesTrabajo,
     obtenerOrdenTrabajo,
     obtenerOrdenPorNumeroSeguimiento,
+    obtenerProgresoPorCorreo,
     actualizarEstadoOrden,
     asignarIngeniero,
     agregarEvidencia,
@@ -17,7 +18,10 @@ const router = Router();
 
 // ========== RUTAS PÚBLICAS (sin autenticación) ==========
 
-// Ruta pública para consultar estado por número de seguimiento (usado por el cliente)
+// Progreso del proyecto por correo + número de seguimiento (cliente sin cuenta)
+router.get('/progreso', obtenerProgresoPorCorreo);
+
+// Estado por número de seguimiento
 router.get('/seguimiento/:numeroSeguimiento', obtenerOrdenPorNumeroSeguimiento);
 
 // ========== RUTAS AUTENTICADAS ==========

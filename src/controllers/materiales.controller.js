@@ -6,7 +6,7 @@ export const crearMaterial = async (req, res) => {
         const { nombre, descripcion, unidadMedida, precioUnitario, categoria, proveedor } = req.body;
 
         // Verificar que sea admin
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede crear materiales" });
         }
 
@@ -32,7 +32,7 @@ export const crearMaterial = async (req, res) => {
             historialPrecios: [{
                 precio: precioUnitario,
                 fecha: new Date(),
-                modificadoPor: req.user.id
+                modificadoPor: req.admin.id
             }]
         });
 
@@ -129,7 +129,7 @@ export const actualizarMaterial = async (req, res) => {
         const actualizaciones = req.body;
 
         // Verificar que sea admin
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede actualizar materiales" });
         }
 
@@ -140,7 +140,7 @@ export const actualizarMaterial = async (req, res) => {
 
         // Si se actualiza el precio, usar el método especial
         if (actualizaciones.precioUnitario && actualizaciones.precioUnitario !== material.precioUnitario) {
-            await material.actualizarPrecio(actualizaciones.precioUnitario, req.user.id);
+            await material.actualizarPrecio(actualizaciones.precioUnitario, req.admin.id);
             delete actualizaciones.precioUnitario; // Ya lo actualizamos
         }
 
@@ -166,7 +166,7 @@ export const actualizarPrecioMaterial = async (req, res) => {
         const { nuevoPrecio } = req.body;
 
         // Verificar que sea admin
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede actualizar precios" });
         }
 
@@ -179,7 +179,7 @@ export const actualizarPrecioMaterial = async (req, res) => {
             return res.status(404).json({ message: "Material no encontrado" });
         }
 
-        await material.actualizarPrecio(nuevoPrecio, req.user.id);
+        await material.actualizarPrecio(nuevoPrecio, req.admin.id);
 
         res.json({
             message: "Precio actualizado exitosamente",
@@ -198,7 +198,7 @@ export const eliminarMaterial = async (req, res) => {
         const { id } = req.params;
 
         // Verificar que sea admin
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede eliminar materiales" });
         }
 

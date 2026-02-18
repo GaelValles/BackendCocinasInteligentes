@@ -22,12 +22,16 @@ const disenosSchema = new mongoose.Schema({
     }],
     precioBase: {
         type: Number,
-        required: true
+        default: 0
     },
     estado: {
         type: String,
         enum: ['borrador', 'preliminar', 'autorizado'],
         default: 'borrador'
+    },
+    disponible: {
+        type: Boolean,
+        default: false
     },
     // Arquitecto que creó/subió el diseño
     arquitecto: {
@@ -38,7 +42,7 @@ const disenosSchema = new mongoose.Schema({
     // Admin que autorizó el diseño
     autorizadoPor: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Clientes',
+        ref: 'Users',
         required: false
     },
     fechaAutorizacion: {
@@ -112,7 +116,7 @@ disenosSchema.methods.calcularPrecioFinal = function() {
 disenosSchema.pre('save', function(next) {
     if (this.isModified('materiales')) {
         this.costoMateriales = this.calcularCostoMateriales();
-        this.precio = this.calcularPrecioFinal();
+        this.precioBase = this.calcularPrecioFinal();
     }
     next();
 });

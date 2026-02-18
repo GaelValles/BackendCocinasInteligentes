@@ -36,6 +36,24 @@ const citasSchema = new mongoose.Schema({
         required: true,
         trim: true
     },
+    ubicacion: {
+        type: String,
+        default: '',
+        trim: true
+    },
+    // Ingeniero asignado por el admin
+    ingenieroAsignado: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Users',
+        default: null
+    },
+    // Especificaciones al iniciar la cita (medidas, estilo, preferencias)
+    especificacionesInicio: {
+        medidas: { type: String, default: '' },
+        estilo: { type: String, default: '' },
+        especificaciones: { type: String, default: '' },
+        materialesPreferidos: { type: String, default: '' }
+    },
 
     // Referencia al diseño de cocina seleccionado
     diseno: {

@@ -18,7 +18,7 @@ export const crearDiseno = async (req, res) => {
         } = req.body;
 
         // Verificar permisos (admin o arquitecto)
-        if (req.user.rol !== 'admin' && req.user.rol !== 'arquitecto') {
+        if (req.admin.rol !== 'admin' && req.admin.rol !== 'arquitecto') {
             return res.status(403).json({ message: "No tienes permisos para crear diseños" });
         }
 
@@ -51,10 +51,10 @@ export const crearDiseno = async (req, res) => {
             categoria,
             materiales: materialesConPrecio,
             especificaciones: especificaciones || {},
-            precio: costoTotal,
+            precioBase: costoTotal,
             costoMateriales: costoTotal,
             estado: estado || 'borrador',
-            arquitecto: req.user.rol === 'arquitecto' ? req.user.id : null
+            arquitecto: req.admin.rol === 'arquitecto' ? req.admin.id : null
         });
 
         await diseno.save();
@@ -74,7 +74,7 @@ export const crearDiseno = async (req, res) => {
 export const obtenerDisenos = async (req, res) => {
     try {
         // Solo admin puede ver todos
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "No tienes permisos" });
         }
 
@@ -139,7 +139,7 @@ export const actualizarDiseno = async (req, res) => {
         const actualizaciones = req.body;
 
         // Verificar permisos
-        if (req.user.rol !== 'admin' && req.user.rol !== 'arquitecto') {
+        if (req.admin.rol !== 'admin' && req.admin.rol !== 'arquitecto') {
             return res.status(403).json({ message: "No tienes permisos para actualizar diseños" });
         }
 
@@ -149,8 +149,8 @@ export const actualizarDiseno = async (req, res) => {
         }
 
         // Si es arquitecto, solo puede actualizar sus propios diseños en borrador
-        if (req.user.rol === 'arquitecto') {
-            if (diseno.arquitecto?.toString() !== req.user.id) {
+        if (req.admin.rol === 'arquitecto') {
+            if (diseno.arquitecto?.toString() !== req.admin.id) {
                 return res.status(403).json({ message: "No puedes actualizar diseños de otros arquitectos" });
             }
             if (diseno.estado !== 'borrador') {
@@ -204,7 +204,7 @@ export const eliminarDiseno = async (req, res) => {
         const { id } = req.params;
 
         // Solo admin puede eliminar
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede eliminar diseños" });
         }
 
@@ -235,7 +235,7 @@ export const subirDisenoPreliminar = async (req, res) => {
         } = req.body;
 
         // Verificar que sea arquitecto
-        if (req.user.rol !== 'arquitecto') {
+        if (req.admin.rol !== 'arquitecto') {
             return res.status(403).json({ message: "Solo arquitectos pueden subir diseños preliminares" });
         }
 
@@ -278,10 +278,10 @@ export const subirDisenoPreliminar = async (req, res) => {
             categoria,
             materiales: materialesConPrecio,
             especificaciones: especificaciones || {},
-            precio: costoTotal,
+            precioBase: costoTotal,
             costoMateriales: costoTotal,
             estado: 'preliminar',
-            arquitecto: req.user.id,
+            arquitecto: req.admin.id,
             disponible: false // No disponible hasta autorización
         });
 
@@ -298,7 +298,7 @@ export const subirDisenoPreliminar = async (req, res) => {
                 destinatario: admin._id,
                 tipo: 'diseño_pendiente',
                 titulo: 'Diseño preliminar para autorizar',
-                mensaje: `El arquitecto ${req.user.nombre} subió un diseño preliminar para la orden #${orden.numeroSeguimiento}`,
+                mensaje: `El arquitecto ${req.admin.nombre} subió un diseño preliminar para la orden #${orden.numeroSeguimiento}`,
                 entidadRelacionada: {
                     tipo: 'Disenos',
                     id: diseno._id
@@ -322,7 +322,7 @@ export const subirDisenoPreliminar = async (req, res) => {
 export const obtenerDisenosPendientes = async (req, res) => {
     try {
         // Solo admin puede ver pendientes
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede ver diseños pendientes" });
         }
 
@@ -345,7 +345,7 @@ export const autorizarDiseno = async (req, res) => {
         const { id } = req.params;
 
         // Solo admin puede autorizar
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede autorizar diseños" });
         }
 
@@ -360,7 +360,7 @@ export const autorizarDiseno = async (req, res) => {
 
         diseno.estado = 'autorizado';
         diseno.disponible = true;
-        diseno.autorizadoPor = req.user.id;
+        diseno.autorizadoPor = req.admin.id;
         diseno.fechaAutorizacion = new Date();
         await diseno.save();
 
@@ -370,7 +370,7 @@ export const autorizarDiseno = async (req, res) => {
                 destinatario: diseno.arquitecto._id,
                 tipo: 'diseño_autorizado',
                 titulo: 'Diseño autorizado',
-                mensaje: `Tu diseño "${diseno.nombre}" ha sido autorizado por ${req.user.nombre}`,
+                mensaje: `Tu diseño "${diseno.nombre}" ha sido autorizado por ${req.admin.nombre}`,
                 entidadRelacionada: {
                     tipo: 'Disenos',
                     id: diseno._id
@@ -382,20 +382,8 @@ export const autorizarDiseno = async (req, res) => {
         // Buscar orden de trabajo asociada y actualizar estado
         const orden = await OrdenTrabajo.findOne({ diseno: diseno._id });
         if (orden && orden.estado === 'pendiente_diseño') {
-            await orden.cambiarEstado('maquetacion', req.user.id, 'Diseño autorizado, iniciando maquetación');
-            
-            // Notificar al cliente
-            await Notificaciones.crearNotificacion({
-                destinatario: orden.cliente,
-                tipo: 'cambio_estado_orden',
-                titulo: 'Diseño aprobado',
-                mensaje: `El diseño de tu orden #${orden.numeroSeguimiento} ha sido aprobado. Iniciando maquetación.`,
-                entidadRelacionada: {
-                    tipo: 'OrdenTrabajo',
-                    id: orden._id
-                },
-                prioridad: 'alta'
-            });
+            await orden.cambiarEstado('maquetacion', req.admin.id, 'Diseño autorizado, iniciando maquetación');
+            // Cliente (embebido) no tiene User id; puede ver progreso por correo + numeroSeguimiento
         }
 
         res.json({
@@ -416,7 +404,7 @@ export const rechazarDiseno = async (req, res) => {
         const { motivo } = req.body;
 
         // Solo admin puede rechazar
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede rechazar diseños" });
         }
 
@@ -461,7 +449,7 @@ export const obtenerDisenosPorArquitecto = async (req, res) => {
         const { arquitectoId } = req.params;
 
         // Verificar permisos (admin o el mismo arquitecto)
-        if (req.user.rol !== 'admin' && req.user.id !== arquitectoId) {
+        if (req.admin.rol !== 'admin' && req.admin.id !== arquitectoId) {
             return res.status(403).json({ message: "No tienes permisos para ver estos diseños" });
         }
 

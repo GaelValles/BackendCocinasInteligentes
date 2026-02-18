@@ -62,6 +62,16 @@ const cotizacionSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Users',
         default: null
+    },
+    cita: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Citas',
+        default: null
+    },
+    porcentajeUtilidad: {
+        type: Number,
+        default: 0,
+        min: 0
     }
 }, {
     timestamps: true

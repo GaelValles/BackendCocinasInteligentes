@@ -12,7 +12,8 @@ import {
     updateCitaEstado,
     cancelarCita,
     iniciarCita,
-    finalizarCita
+    finalizarCita,
+    asignarIngenieroCita
 } from "../controllers/citas.controller.js";
 
 const router = Router();
@@ -36,8 +37,11 @@ router.get('/verCitas', authRequired, obtenerCitas);
 // Ruta para ver una cita específica
 router.get('/verCita/:id', authRequired, obtenerCita);
 
-// Ruta para obtener citas por cliente específico
-router.get('/porCliente/:id', authRequired, obtenerCitasPorCliente);
+// Asignar ingeniero a una cita (solo admin)
+router.put('/:id/asignarIngeniero', authRequired, asignarIngenieroCita);
+
+// Ruta para obtener citas por correo del cliente (query: ?correo=...)
+router.get('/porCliente', authRequired, obtenerCitasPorCliente);
 
 // Ruta para obtener citas por carro específico
 router.get('/porCarro/:id', authRequired, obtenerCitasPorCarro);

@@ -13,6 +13,7 @@ export const crearCita = async (req, res) => {
       nombreCliente,
       correoCliente,
       telefonoCliente,
+      ubicacion,
       diseno,
       informacionAdicional
     } = req.body;
@@ -51,6 +52,7 @@ export const crearCita = async (req, res) => {
       nombreCliente: nombreCliente.trim(),
       correoCliente: correoCliente.toLowerCase().trim(),
       telefonoCliente: telefonoCliente.trim(),
+      ubicacion: ubicacion?.trim() || '',
       diseno: diseno || null,
       informacionAdicional: informacionAdicional || '',
       estado: 'programada'
@@ -72,6 +74,37 @@ export const crearCita = async (req, res) => {
   } catch (error) {
     console.error('Error en crearCita:', error);
     return res.status(500).json({ message: "Error al crear la cita", error: error.message });
+  }
+};
+
+// Asignar ingeniero a una cita (solo admin)
+export const asignarIngenieroCita = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ingenieroId } = req.body;
+
+    if (req.admin?.rol !== 'admin') {
+      return res.status(403).json({ message: "Solo el administrador puede asignar ingenieros" });
+    }
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "ID de cita inválido" });
+    }
+
+    const cita = await Citas.findById(id);
+    if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
+
+    cita.ingenieroAsignado = ingenieroId && mongoose.Types.ObjectId.isValid(ingenieroId) ? ingenieroId : null;
+    await cita.save();
+
+    const citaPopulated = await Citas.findById(id).populate('ingenieroAsignado', 'nombre correo');
+    return res.json({
+      message: "Ingeniero asignado correctamente",
+      cita: citaPopulated
+    });
+  } catch (error) {
+    console.error('Error en asignarIngenieroCita:', error);
+    return res.status(500).json({ message: "Error al asignar ingeniero", error: error.message });
   }
 };
 
@@ -102,15 +135,13 @@ export const cancelarCita = async (req, res) => {
 
 export const obtenerCitasPorCliente = async (req, res) => {
     try {
-        const { correo } = req.query;
-        
+        const correo = req.query.correo;
         if (!correo) {
-            return res.status(400).json({ message: "Correo es requerido" });
+            return res.status(400).json({ message: "Correo es requerido (query: ?correo=...)" });
         }
 
-        // Obtenemos las citas por correo del cliente
         const citas = await Citas.find({
-            correoCliente: correo.toLowerCase().trim()
+            correoCliente: correo.toString().toLowerCase().trim()
         })
         .populate({
             path: 'diseno',
@@ -147,7 +178,7 @@ export const obtenerCitasPorCarro = async (req, res) => {
 export const actualizarCita = async (req, res) => {
     try {
         const { id } = req.params;
-        const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, informacionAdicional, estado, diseno } = req.body;
+        const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, informacionAdicional, estado, diseno, ingenieroAsignado } = req.body;
 
         const cita = await Citas.findById(id);
         if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
@@ -160,9 +191,11 @@ export const actualizarCita = async (req, res) => {
         if (nombreCliente) updateData.nombreCliente = nombreCliente.trim();
         if (correoCliente) updateData.correoCliente = correoCliente.toLowerCase().trim();
         if (telefonoCliente) updateData.telefonoCliente = telefonoCliente.trim();
+        if (ubicacion !== undefined) updateData.ubicacion = ubicacion.trim();
         if (informacionAdicional !== undefined) updateData.informacionAdicional = informacionAdicional;
         if (estado) updateData.estado = estado;
         if (diseno !== undefined) updateData.diseno = diseno;
+        if (ingenieroAsignado !== undefined) updateData.ingenieroAsignado = ingenieroAsignado || null;
 
         const citaActualizada = await Citas.findByIdAndUpdate(
             id,
@@ -307,10 +340,11 @@ export const updateCitaEstado = async (req, res) => {
     }
 };
 
-// Iniciar cita (cambia estado a en_proceso y registra fechaInicio)
+// Iniciar cita (cambia estado a en_proceso, registra fechaInicio y especificaciones)
 export const iniciarCita = async (req, res) => {
     try {
         const { id } = req.params;
+        const { medidas, estilo, especificaciones, materialesPreferidos } = req.body || {};
 
         // Verificar que sea admin o ingeniero
         if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
@@ -328,6 +362,10 @@ export const iniciarCita = async (req, res) => {
 
         cita.estado = 'en_proceso';
         cita.fechaInicio = new Date();
+        if (medidas !== undefined) cita.especificacionesInicio.medidas = medidas;
+        if (estilo !== undefined) cita.especificacionesInicio.estilo = estilo;
+        if (especificaciones !== undefined) cita.especificacionesInicio.especificaciones = especificaciones;
+        if (materialesPreferidos !== undefined) cita.especificacionesInicio.materialesPreferidos = materialesPreferidos;
         await cita.save();
 
         // Poblar diseño para respuesta si existe

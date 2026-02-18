@@ -16,11 +16,11 @@ const ordenTrabajoSchema = new mongoose.Schema({
         ref: 'Citas',
         required: true
     },
-    // Cliente propietario
+    // Cliente propietario (embebido: quien registró la cita; puede no tener cuenta User)
     cliente: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Clientes',
-        required: true
+        nombre: { type: String, default: '' },
+        correo: { type: String, default: '' },
+        telefono: { type: String, default: '' }
     },
     // Diseño asociado (puede ser null si está pendiente)
     diseno: {
@@ -32,7 +32,7 @@ const ordenTrabajoSchema = new mongoose.Schema({
     // Ingeniero asignado
     ingenieroAsignado: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Clientes',
+        ref: 'Users',
         required: false
     },
     // Estado del progreso
@@ -67,7 +67,7 @@ const ordenTrabajoSchema = new mongoose.Schema({
         },
         modificadoPor: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: 'Clientes'
+            ref: 'Users'
         },
         comentario: String
     }],
@@ -106,7 +106,7 @@ const ordenTrabajoSchema = new mongoose.Schema({
         },
         subidoPor: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: 'Clientes'
+            ref: 'Users'
         }
     }],
     // Fechas importantes

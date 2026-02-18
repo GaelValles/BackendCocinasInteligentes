@@ -9,7 +9,7 @@ export const crearOrdenTrabajo = async (req, res) => {
         const { citaId, ingenieroId, fechaEstimadaFinalizacion, notasInternas } = req.body;
 
         // Verificar que la cita existe
-        const cita = await Citas.findById(citaId).populate('diseno').populate('cliente');
+        const cita = await Citas.findById(citaId).populate('diseno');
         if (!cita) {
             return res.status(404).json({ message: "Cita no encontrada" });
         }
@@ -25,11 +25,15 @@ export const crearOrdenTrabajo = async (req, res) => {
         // Determinar estado inicial según si tiene diseño o no
         const estadoInicial = cita.diseno ? 'maquetacion' : 'pendiente_diseño';
 
-        // Crear la orden de trabajo
+        // Crear la orden de trabajo (cliente embebido desde datos de la cita)
         const ordenTrabajo = new OrdenTrabajo({
             numeroSeguimiento,
             cita: citaId,
-            cliente: cita.cliente._id,
+            cliente: {
+                nombre: cita.nombreCliente,
+                correo: cita.correoCliente,
+                telefono: cita.telefonoCliente
+            },
             diseno: cita.diseno?._id || null,
             ingenieroAsignado: ingenieroId || null,
             estado: estadoInicial,
@@ -57,19 +61,7 @@ export const crearOrdenTrabajo = async (req, res) => {
                 });
             }
         }
-
-        // Notificar al cliente
-        await Notificaciones.crearNotificacion({
-            destinatario: cita.cliente._id,
-            tipo: 'cambio_estado_orden',
-            titulo: 'Orden de trabajo creada',
-            mensaje: `Tu orden #${numeroSeguimiento} ha sido creada. Puedes seguir el progreso con este número.`,
-            entidadRelacionada: {
-                tipo: 'OrdenTrabajo',
-                id: ordenTrabajo._id
-            },
-            prioridad: 'alta'
-        });
+        // Cliente sin cuenta User: puede ver progreso con GET /ordenes/progreso?correo=...&numeroSeguimiento=...
 
         // Si se asignó ingeniero, notificarle
         if (ingenieroId) {
@@ -102,13 +94,12 @@ export const crearOrdenTrabajo = async (req, res) => {
 export const obtenerOrdenesTrabajo = async (req, res) => {
     try {
         // Verificar que sea admin
-        if (req.user.rol !== 'admin') {
+        if (req.admin?.rol !== 'admin') {
             return res.status(403).json({ message: "No tienes permisos para ver todas las órdenes" });
         }
 
         const ordenes = await OrdenTrabajo.find()
-            .populate('cliente', 'nombre correo telefono')
-            .populate('diseno', 'nombre precio categoria')
+            .populate('diseno', 'nombre precioBase categoria')
             .populate('ingenieroAsignado', 'nombre correo')
             .populate('cita')
             .sort({ createdAt: -1 });
@@ -127,7 +118,6 @@ export const obtenerOrdenTrabajo = async (req, res) => {
         const { id } = req.params;
 
         const orden = await OrdenTrabajo.findById(id)
-            .populate('cliente', 'nombre correo telefono')
             .populate('diseno')
             .populate('ingenieroAsignado', 'nombre correo')
             .populate('cita')
@@ -138,18 +128,12 @@ export const obtenerOrdenTrabajo = async (req, res) => {
             return res.status(404).json({ message: "Orden de trabajo no encontrada" });
         }
 
-        // Verificar permisos (admin, ingeniero asignado, o cliente propietario)
-        const esAdmin = req.user.rol === 'admin';
-        const esIngenieroAsignado = orden.ingenieroAsignado && orden.ingenieroAsignado._id.toString() === req.user.id;
-        const esCliente = orden.cliente._id.toString() === req.user.id;
+        // Verificar permisos (admin o ingeniero asignado; cliente ve por endpoint público con correo + numeroSeguimiento)
+        const esAdmin = req.admin?.rol === 'admin';
+        const esIngenieroAsignado = orden.ingenieroAsignado && orden.ingenieroAsignado._id.toString() === req.admin?.id;
 
-        if (!esAdmin && !esIngenieroAsignado && !esCliente) {
+        if (!esAdmin && !esIngenieroAsignado) {
             return res.status(403).json({ message: "No tienes permisos para ver esta orden" });
-        }
-
-        // Si es cliente, ocultar notas internas
-        if (esCliente && !esAdmin) {
-            orden.notasInternas = undefined;
         }
 
         res.json(orden);
@@ -157,6 +141,55 @@ export const obtenerOrdenTrabajo = async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Error al obtener orden de trabajo", error: error.message });
+    }
+};
+
+// Obtener progreso por correo + número de seguimiento (PÚBLICO - cliente sin cuenta)
+export const obtenerProgresoPorCorreo = async (req, res) => {
+    try {
+        const { correo, numeroSeguimiento } = req.query;
+        if (!correo?.trim() || !numeroSeguimiento?.trim()) {
+            return res.status(400).json({ message: "Se requieren correo y numeroSeguimiento (query)" });
+        }
+
+        const orden = await OrdenTrabajo.findOne({
+            numeroSeguimiento: numeroSeguimiento.toString().trim().toUpperCase(),
+            'cliente.correo': correo.toString().trim().toLowerCase()
+        })
+            .populate('diseno', 'nombre descripcion categoria imagenes')
+            .select('-notasInternas');
+
+        if (!orden) {
+            return res.status(404).json({ message: "No se encontró el proyecto o el correo no coincide" });
+        }
+
+        const respuesta = {
+            numeroSeguimiento: orden.numeroSeguimiento,
+            estado: orden.estado,
+            porcentajeProgreso: orden.porcentajeProgreso,
+            diseno: orden.diseno,
+            evidencias: orden.evidencias?.map(ev => ({
+                tipo: ev.tipo,
+                url: ev.url,
+                descripcion: ev.descripcion,
+                estado: ev.estado,
+                fecha: ev.fecha
+            })) || [],
+            fechaInicio: orden.fechaInicio,
+            fechaEstimadaFinalizacion: orden.fechaEstimadaFinalizacion,
+            fechaFinalizacion: orden.fechaFinalizacion,
+            historialEstados: orden.historialEstados?.map(h => ({
+                estadoAnterior: h.estadoAnterior,
+                estadoNuevo: h.estadoNuevo,
+                fecha: h.fecha,
+                comentario: h.comentario
+            })) || []
+        };
+
+        res.json(respuesta);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Error al consultar progreso", error: error.message });
     }
 };
 
@@ -168,7 +201,7 @@ export const obtenerOrdenPorNumeroSeguimiento = async (req, res) => {
         const orden = await OrdenTrabajo.findOne({ numeroSeguimiento: numeroSeguimiento.toUpperCase() })
             .populate('diseno', 'nombre descripcion categoria imagenes')
             .populate('evidencias.subidoPor', 'nombre')
-            .select('-notasInternas -cita -cliente.password'); // Excluir información sensible
+            .select('-notasInternas'); // Excluir información sensible
 
         if (!orden) {
             return res.status(404).json({ message: "Orden de trabajo no encontrada" });
@@ -213,7 +246,7 @@ export const actualizarEstadoOrden = async (req, res) => {
         const { nuevoEstado, comentario } = req.body;
 
         // Verificar que sea admin o ingeniero
-        if (req.user.rol !== 'admin' && req.user.rol !== 'ingeniero') {
+        if (req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
             return res.status(403).json({ message: "No tienes permisos para actualizar estados" });
         }
 
@@ -223,12 +256,12 @@ export const actualizarEstadoOrden = async (req, res) => {
         }
 
         // Si es ingeniero, verificar que esté asignado
-        if (req.user.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.user.id) {
+        if (req.admin.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.admin.id) {
             return res.status(403).json({ message: "No estás asignado a esta orden" });
         }
 
         // Cambiar estado usando el método del modelo
-        await orden.cambiarEstado(nuevoEstado, req.user.id, comentario);
+        await orden.cambiarEstado(nuevoEstado, req.admin.id, comentario);
 
         // Crear notificación de cambio de estado
         await Notificaciones.notificarCambioEstadoOrden(orden, nuevoEstado);
@@ -251,7 +284,7 @@ export const asignarIngeniero = async (req, res) => {
         const { ingenieroId } = req.body;
 
         // Solo admin puede asignar
-        if (req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "Solo admin puede asignar ingenieros" });
         }
 
@@ -300,7 +333,7 @@ export const agregarEvidencia = async (req, res) => {
         const { tipo, url, public_id, descripcion, estado } = req.body;
 
         // Verificar que sea admin o ingeniero
-        if (req.user.rol !== 'admin' && req.user.rol !== 'ingeniero') {
+        if (req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
             return res.status(403).json({ message: "No tienes permisos para agregar evidencias" });
         }
 
@@ -310,7 +343,7 @@ export const agregarEvidencia = async (req, res) => {
         }
 
         // Si es ingeniero, verificar que esté asignado
-        if (req.user.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.user.id) {
+        if (req.admin.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.admin.id) {
             return res.status(403).json({ message: "No estás asignado a esta orden" });
         }
 
@@ -320,22 +353,10 @@ export const agregarEvidencia = async (req, res) => {
             public_id,
             descripcion,
             estado: estado || orden.estado,
-            subidoPor: req.user.id
+            subidoPor: req.admin.id
         });
 
         await orden.save();
-
-        // Notificar al cliente
-        await Notificaciones.crearNotificacion({
-            destinatario: orden.cliente,
-            tipo: 'cambio_estado_orden',
-            titulo: 'Nueva evidencia agregada',
-            mensaje: `Se agregó nueva evidencia a tu orden #${orden.numeroSeguimiento}`,
-            entidadRelacionada: {
-                tipo: 'OrdenTrabajo',
-                id: orden._id
-            }
-        });
 
         res.json({
             message: "Evidencia agregada exitosamente",
@@ -354,12 +375,11 @@ export const obtenerOrdenesPorIngeniero = async (req, res) => {
         const { ingenieroId } = req.params;
 
         // Verificar permisos (admin o el mismo ingeniero)
-        if (req.user.rol !== 'admin' && req.user.id !== ingenieroId) {
+        if (req.admin.rol !== 'admin' && req.admin.id !== ingenieroId) {
             return res.status(403).json({ message: "No tienes permisos para ver estas órdenes" });
         }
 
         const ordenes = await OrdenTrabajo.find({ ingenieroAsignado: ingenieroId })
-            .populate('cliente', 'nombre correo telefono')
             .populate('diseno', 'nombre categoria')
             .populate('cita')
             .sort({ createdAt: -1 });
@@ -376,12 +396,11 @@ export const obtenerOrdenesPorIngeniero = async (req, res) => {
 export const obtenerOrdenesPendientesDiseno = async (req, res) => {
     try {
         // Verificar que sea arquitecto o admin
-        if (req.user.rol !== 'arquitecto' && req.user.rol !== 'admin') {
+        if (req.admin.rol !== 'arquitecto' && req.admin.rol !== 'admin') {
             return res.status(403).json({ message: "No tienes permisos para ver estas órdenes" });
         }
 
         const ordenes = await OrdenTrabajo.find({ estado: 'pendiente_diseño' })
-            .populate('cliente', 'nombre correo telefono')
             .populate('cita')
             .sort({ createdAt: -1 });
 
@@ -400,7 +419,7 @@ export const finalizarOrden = async (req, res) => {
         const { comentario } = req.body;
 
         // Verificar que sea admin o ingeniero
-        if (req.user.rol !== 'admin' && req.user.rol !== 'ingeniero') {
+        if (req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
             return res.status(403).json({ message: "No tienes permisos para finalizar órdenes" });
         }
 
@@ -410,11 +429,11 @@ export const finalizarOrden = async (req, res) => {
         }
 
         // Si es ingeniero, verificar que esté asignado
-        if (req.user.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.user.id) {
+        if (req.admin.rol === 'ingeniero' && orden.ingenieroAsignado?.toString() !== req.admin.id) {
             return res.status(403).json({ message: "No estás asignado a esta orden" });
         }
 
-        await orden.cambiarEstado('completado', req.user.id, comentario || 'Orden finalizada');
+        await orden.cambiarEstado('completado', req.admin.id, comentario || 'Orden finalizada');
 
         // Notificación se crea automáticamente en cambiarEstado
 

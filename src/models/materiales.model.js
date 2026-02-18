@@ -61,6 +61,22 @@ const materialesSchema = new mongoose.Schema({
             'Otro'
         ]
     },
+    // Sección del formulario de materiales (cotización / presupuesto)
+    seccion: {
+        type: String,
+        trim: true,
+        enum: [
+            'cubierta',
+            'estructura',
+            'vistas',
+            'cajones_puertas',
+            'accesorios_modulo',
+            'extraibles_puertas_abatibles',
+            'insumos_produccion',
+            'extras',
+            'gastos_fijos'
+        ],
+    },
     proveedor: {
         type: String,
         default: ''
@@ -81,7 +97,7 @@ const materialesSchema = new mongoose.Schema({
         },
         modificadoPor: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: 'Clientes'
+            ref: 'Users'
         }
     }]
 }, {
