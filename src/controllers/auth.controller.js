@@ -7,6 +7,12 @@ import {createAccessToken} from "../libs/jwt.js";
 export const register = async (req, res) => {
     const {nombre, correo, telefono, rol, password} = req.body;
     try {
+        if (rol === 'cliente') {
+            return res.status(400).json({
+                success: false,
+                message: 'No hay registro para clientes. Los datos del cliente se guardan al agendar una cita.'
+            });
+        }
         const passwordHash = await bcrypt.hash(password, 10);
         const newAdmin = new Admin({
             nombre,
@@ -25,16 +31,34 @@ export const register = async (req, res) => {
             secure: true,
         })
         res.json({
+            success: true,
             message: 'Usuario creado correctamente',
+            token: token,
+            data: {
+                user: {
+                    id: AdminSaved._id,
+                    nombre: AdminSaved.nombre,
+                    correo: AdminSaved.correo,
+                    rol: AdminSaved.rol
+                }
+            }
         })
 
     } catch (error) {
-        res.status(500).json({ message: error.message})
+        res.status(500).json({ 
+            success: false,
+            message: error.message
+        })
     }
 };
 export const subirUser = async (req, res) => {
     const {nombre, correo, telefono, rol, password} = req.body;
     try {
+        if (rol === 'cliente') {
+            return res.status(400).json({
+                message: 'No se crean usuarios con rol cliente. Los datos del cliente se guardan al agendar una cita.'
+            });
+        }
         const passwordHash = await bcrypt.hash(password, 10);
         const newAdmin = new Admin({
             nombre,
@@ -58,21 +82,41 @@ export const login = async (req, res) => {
     try {
     const AdminFound = await Admin.findOne({correo});
 
-    if (!AdminFound) return res.status(400).json({message: 'Usuario no encontrado'});
+    if (!AdminFound) return res.status(400).json({
+        success: false,
+        message: 'Usuario no encontrado'
+    });
     const isMatch = await bcrypt.compare(password, AdminFound.password);
     
-    if (!isMatch) return res.status(400).json({message: 'Contraseña incorrecta'});
+    if (!isMatch) return res.status(400).json({
+        success: false,
+        message: 'Contraseña incorrecta'
+    });
 
     const token = await createAccessToken({id: AdminFound._id,})
     
     res.cookie('token',token)
     res.json({
-        message: 'Usuario encontrado correctamente',
+        success: true,
+        message: 'Login exitoso',
+        token: token,
+        data: {
+            user: {
+                id: AdminFound._id,
+                nombre: AdminFound.nombre,
+                correo: AdminFound.correo,
+                telefono: AdminFound.telefono,
+                rol: AdminFound.rol
+            }
+        }
     })
 
 
     } catch (error) {
-        res.status(500).json({ message: error.message})
+        res.status(500).json({ 
+            success: false,
+            message: error.message
+        })
     }
 };
 
@@ -116,7 +160,10 @@ export const logout = (req, res) => {
     res.cookie("token", "",{
         expires: new Date(0)
     });
-    return res.sendStatus(200).json({message: "Sesión cerrada correctamente"});
+    return res.status(200).json({
+        success: true,
+        message: "Sesión cerrada correctamente"
+    });
 }
 
 export const verifyToken = async (req, res) => {
@@ -163,4 +210,157 @@ export const updatePerfil = async (req, res) => {
     }, {new: true});
     if (!adminUpdated) return res.status(404).json({message: 'Usuario no encontrado'});
     return res.json(adminUpdated);
+};
+
+/**
+ * Obtener usuario actual autenticado (getCurrentUser)
+ */
+export const getCurrentUser = async (req, res) => {
+    try {
+        const adminFound = await Admin.findById(req.admin.id).select('-password');
+
+        if (!adminFound) {
+            return res.status(404).json({
+                success: false,
+                message: 'Usuario no encontrado'
+            });
+        }
+
+        return res.json({
+            success: true,
+            data: {
+                id: adminFound._id,
+                nombre: adminFound.nombre,
+                correo: adminFound.correo,
+                telefono: adminFound.telefono,
+                rol: adminFound.rol,
+                createdAt: adminFound.createdAt
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener usuario actual',
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Actualizar contraseña del usuario autenticado
+ */
+export const updatePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Contraseña actual y nueva contraseña son requeridas'
+            });
+        }
+
+        const admin = await Admin.findById(req.admin.id);
+
+        if (!admin) {
+            return res.status(404).json({
+                success: false,
+                message: 'Usuario no encontrado'
+            });
+        }
+
+        // Verificar contraseña actual
+        const isMatch = await bcrypt.compare(currentPassword, admin.password);
+
+        if (!isMatch) {
+            return res.status(400).json({
+                success: false,
+                message: 'Contraseña actual incorrecta'
+            });
+        }
+
+        // Hash de la nueva contraseña
+        const passwordHash = await bcrypt.hash(newPassword, 10);
+        admin.password = passwordHash;
+        await admin.save();
+
+        res.json({
+            success: true,
+            message: 'Contraseña actualizada exitosamente'
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Error al actualizar contraseña',
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Solicitar restablecimiento de contraseña (por implementar con email)
+ */
+export const requestPasswordReset = async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email es requerido'
+            });
+        }
+
+        const admin = await Admin.findOne({ correo: email });
+
+        if (!admin) {
+            // Por seguridad, retornar éxito aunque el usuario no exista
+            return res.json({
+                success: true,
+                message: 'Si el correo existe, recibirás instrucciones para restablecer tu contraseña'
+            });
+        }
+
+        // TODO: Implementar envío de email con token de restablecimiento
+        // Por ahora, solo retornamos éxito
+        res.json({
+            success: true,
+            message: 'Instrucciones de restablecimiento enviadas al correo (por implementar)'
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Error al solicitar restablecimiento',
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Restablecer contraseña con token (por implementar con email)
+ */
+export const resetPassword = async (req, res) => {
+    try {
+        const { token, newPassword } = req.body;
+
+        if (!token || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Token y nueva contraseña son requeridos'
+            });
+        }
+
+        // TODO: Implementar validación de token de restablecimiento
+        // Por ahora, retornar 501 (no implementado)
+        res.status(501).json({
+            success: false,
+            message: 'Funcionalidad por implementar'
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Error al restablecer contraseña',
+            error: error.message
+        });
+    }
 };

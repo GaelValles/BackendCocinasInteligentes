@@ -41,6 +41,65 @@ export const crearCita = async (req, res) => {
       return res.status(400).json({ message: "La fecha agendada debe ser posterior a la fecha actual" });
     }
 
+    // Convertir a hora de México (America/Mexico_City) para validaciones
+    const fechaMexico = new Date(fechaObj.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+    
+    // VALIDACIÓN: Solo lunes a viernes (0=Domingo, 6=Sábado)
+    const diaSemana = fechaMexico.getDay();
+    if (diaSemana === 0 || diaSemana === 6) {
+      return res.status(400).json({ 
+        message: "Las citas solo pueden agendarse de lunes a viernes",
+        diaRecibido: fechaMexico.toLocaleDateString('es-MX', { 
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          timeZone: 'America/Mexico_City'
+        })
+      });
+    }
+
+    // VALIDACIÓN: Solo entre 9:00 AM y 6:00 PM (hora de México)
+    const hora = fechaMexico.getHours();
+    const minutos = fechaMexico.getMinutes();
+    const horaDecimal = hora + (minutos / 60);
+    
+    if (horaDecimal < 9 || horaDecimal >= 18) {
+      return res.status(400).json({ 
+        message: "Las citas solo pueden agendarse entre las 9:00 AM y las 6:00 PM (hora de México)",
+        horaRecibida: `${hora}:${minutos.toString().padStart(2, '0')}`
+      });
+    }
+
+    // VALIDACIÓN: Verificar disponibilidad (2 horas de separación entre citas)
+    const dosHorasAntes = new Date(fechaObj.getTime() - (2 * 60 * 60 * 1000));
+    const dosHorasDespues = new Date(fechaObj.getTime() + (2 * 60 * 60 * 1000));
+    
+    const citasConflicto = await Citas.find({
+      fechaAgendada: {
+        $gte: dosHorasAntes,
+        $lte: dosHorasDespues
+      },
+      estado: { $in: ['programada', 'en_proceso'] } // Solo considerar citas activas
+    });
+
+    if (citasConflicto.length > 0) {
+      const horasCita = citasConflicto.map(c => {
+        const fecha = new Date(c.fechaAgendada);
+        return fecha.toLocaleString('es-MX', { 
+          timeZone: 'America/Mexico_City',
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+      });
+      
+      return res.status(400).json({ 
+        message: "Ya existe una cita programada en ese horario. Debe haber al menos 2 horas de separación entre citas.",
+        citasOcupadas: horasCita
+      });
+    }
+
     // Validar ObjectId del diseño si se proporciona
     if (diseno && !mongoose.Types.ObjectId.isValid(diseno)) {
       return res.status(400).json({ message: "ID de diseño inválido" });
@@ -83,23 +142,82 @@ export const asignarIngenieroCita = async (req, res) => {
     const { id } = req.params;
     const { ingenieroId } = req.body;
 
-    if (req.admin?.rol !== 'admin') {
-      return res.status(403).json({ message: "Solo el administrador puede asignar ingenieros" });
+    console.log('Usuario autenticado:', req.admin);
+    console.log('Rol del usuario:', req.admin?.rol);
+
+    // Verificar que el usuario sea admin
+    if (!req.admin || req.admin.rol !== 'admin') {
+      return res.status(403).json({ 
+        message: "Solo el administrador puede asignar ingenieros",
+        rol: req.admin?.rol 
+      });
     }
 
+    // Validar ID de cita
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "ID de cita inválido" });
     }
 
+    // Buscar la cita
     const cita = await Citas.findById(id);
-    if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
+    if (!cita) {
+      return res.status(404).json({ message: "Cita no encontrada" });
+    }
 
-    cita.ingenieroAsignado = ingenieroId && mongoose.Types.ObjectId.isValid(ingenieroId) ? ingenieroId : null;
-    await cita.save();
+    // Si se proporciona un ingenieroId, validar y asignar
+    if (ingenieroId) {
+      if (!mongoose.Types.ObjectId.isValid(ingenieroId)) {
+        return res.status(400).json({ message: "ID de ingeniero inválido" });
+      }
 
-    const citaPopulated = await Citas.findById(id).populate('ingenieroAsignado', 'nombre correo');
+      // Verificar que el ingeniero existe y tiene el rol correcto
+      const ingeniero = await Admin.findById(ingenieroId);
+      if (!ingeniero) {
+        return res.status(404).json({ message: "Ingeniero no encontrado" });
+      }
+
+      if (ingeniero.rol !== 'ingeniero' && ingeniero.rol !== 'arquitecto') {
+        return res.status(400).json({ 
+          message: "El usuario debe tener rol de ingeniero o arquitecto",
+          rolEncontrado: ingeniero.rol 
+        });
+      }
+
+      // Remover la cita del ingeniero anterior si existe
+      if (cita.ingenieroAsignado && cita.ingenieroAsignado.toString() !== ingenieroId) {
+        await Admin.findByIdAndUpdate(
+          cita.ingenieroAsignado,
+          { $pull: { citas: cita._id } }
+        );
+      }
+
+      // Asignar el nuevo ingeniero a la cita
+      cita.ingenieroAsignado = ingenieroId;
+      await cita.save();
+
+      // Agregar la cita al array de citas del ingeniero si no existe
+      if (!ingeniero.citas.includes(cita._id)) {
+        ingeniero.citas.push(cita._id);
+        await ingeniero.save();
+      }
+    } else {
+      // Si no se proporciona ingenieroId, remover la asignación
+      if (cita.ingenieroAsignado) {
+        await Admin.findByIdAndUpdate(
+          cita.ingenieroAsignado,
+          { $pull: { citas: cita._id } }
+        );
+      }
+      cita.ingenieroAsignado = null;
+      await cita.save();
+    }
+
+    // Obtener la cita actualizada con el ingeniero poblado
+    const citaPopulated = await Citas.findById(id)
+      .populate('ingenieroAsignado', 'nombre correo telefono rol');
+
     return res.json({
-      message: "Ingeniero asignado correctamente",
+      message: ingenieroId ? "Ingeniero asignado correctamente" : "Asignación de ingeniero removida",
       cita: citaPopulated
     });
   } catch (error) {
@@ -253,9 +371,17 @@ export const obtenerCita = async (req, res) => {
             .populate({
                 path: 'diseno',
                 select: 'nombre descripcion imagenes'
-            });
+            })
+            .populate('ingenieroAsignado', 'nombre correo telefono rol');
         
         if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
+        
+        // Si es ingeniero o arquitecto, solo puede ver sus citas asignadas
+        if (req.admin && (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto')) {
+            if (!cita.ingenieroAsignado || cita.ingenieroAsignado._id.toString() !== req.admin.id.toString()) {
+                return res.status(403).json({ message: "No tienes permiso para ver esta cita" });
+            }
+        }
         
         res.json(cita);
     } catch (error) {
@@ -347,13 +473,20 @@ export const iniciarCita = async (req, res) => {
         const { medidas, estilo, especificaciones, materialesPreferidos } = req.body || {};
 
         // Verificar que sea admin o ingeniero
-        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
+        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto') {
             return res.status(403).json({ message: "No tienes permisos para iniciar citas" });
         }
 
         const cita = await Citas.findById(id);
         if (!cita) {
             return res.status(404).json({ message: "Cita no encontrada" });
+        }
+
+        // Si es ingeniero o arquitecto, solo puede iniciar sus citas asignadas
+        if (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto') {
+            if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
+                return res.status(403).json({ message: "Solo puedes iniciar las citas asignadas a ti" });
+            }
         }
 
         if (cita.estado !== 'programada') {
@@ -368,13 +501,11 @@ export const iniciarCita = async (req, res) => {
         if (materialesPreferidos !== undefined) cita.especificacionesInicio.materialesPreferidos = materialesPreferidos;
         await cita.save();
 
-        // Poblar diseño para respuesta si existe
-        if (cita.diseno) {
-            await cita.populate({
-                path: 'diseno',
-                select: 'nombre descripcion imagenes'
-            });
-        }
+        // Poblar diseño e ingeniero para respuesta
+        await cita.populate([
+            { path: 'diseno', select: 'nombre descripcion imagenes' },
+            { path: 'ingenieroAsignado', select: 'nombre correo telefono rol' }
+        ]);
 
         res.json({
             message: "Cita iniciada exitosamente",
@@ -394,13 +525,20 @@ export const finalizarCita = async (req, res) => {
         const { ingenieroId, fechaEstimadaFinalizacion, notasInternas } = req.body;
 
         // Verificar que sea admin o ingeniero
-        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero') {
+        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto') {
             return res.status(403).json({ message: "No tienes permisos para finalizar citas" });
         }
 
         const cita = await Citas.findById(id).populate('diseno');
         if (!cita) {
             return res.status(404).json({ message: "Cita no encontrada" });
+        }
+
+        // Si es ingeniero o arquitecto, solo puede finalizar sus citas asignadas
+        if (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto') {
+            if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
+                return res.status(403).json({ message: "Solo puedes finalizar las citas asignadas a ti" });
+            }
         }
 
         if (cita.estado === 'completada') {
@@ -483,5 +621,85 @@ export const finalizarCita = async (req, res) => {
     } catch (error) {
         console.error('Error en finalizarCita:', error);
         res.status(500).json({ message: "Error al finalizar cita", error: error.message });
+    }
+};
+
+// Obtener citas asignadas al ingeniero autenticado
+export const obtenerCitasIngeniero = async (req, res) => {
+    try {
+        // Verificar que sea ingeniero o arquitecto
+        if (!req.admin || (req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto')) {
+            return res.status(403).json({ message: "Solo ingenieros pueden acceder a esta ruta" });
+        }
+
+        // Buscar citas asignadas al ingeniero
+        const citas = await Citas.find({ ingenieroAsignado: req.admin.id })
+            .populate({
+                path: 'diseno',
+                select: 'nombre descripcion imagenes'
+            })
+            .populate('ingenieroAsignado', 'nombre correo telefono rol')
+            .sort({ fechaAgendada: -1 })
+            .lean();
+
+        res.json({
+            message: `Citas asignadas a ${req.admin.nombre || 'ti'}`,
+            total: citas.length,
+            citas
+        });
+    } catch (error) {
+        console.error('Error en obtenerCitasIngeniero:', error);
+        res.status(500).json({ message: "Error al obtener las citas", error: error.message });
+    }
+};
+
+// Actualizar especificaciones de una cita (solo el ingeniero asignado)
+export const actualizarEspecificaciones = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { medidas, estilo, especificaciones, materialesPreferidos } = req.body || {};
+
+        // Verificar que sea ingeniero o arquitecto
+        if (!req.admin || (req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto')) {
+            return res.status(403).json({ message: "Solo ingenieros pueden actualizar especificaciones" });
+        }
+
+        const cita = await Citas.findById(id);
+        if (!cita) {
+            return res.status(404).json({ message: "Cita no encontrada" });
+        }
+
+        // Verificar que la cita esté asignada al ingeniero
+        if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
+            return res.status(403).json({ message: "Solo puedes actualizar las especificaciones de tus citas asignadas" });
+        }
+
+        // Verificar que la cita esté en proceso
+        if (cita.estado !== 'en_proceso') {
+            return res.status(400).json({ message: "Solo puedes actualizar especificaciones de citas en proceso" });
+        }
+
+        // Actualizar especificaciones
+        if (medidas !== undefined) cita.especificacionesInicio.medidas = medidas;
+        if (estilo !== undefined) cita.especificacionesInicio.estilo = estilo;
+        if (especificaciones !== undefined) cita.especificacionesInicio.especificaciones = especificaciones;
+        if (materialesPreferidos !== undefined) cita.especificacionesInicio.materialesPreferidos = materialesPreferidos;
+
+        await cita.save();
+
+        // Poblar diseño e ingeniero para respuesta
+        await cita.populate([
+            { path: 'diseno', select: 'nombre descripcion imagenes' },
+            { path: 'ingenieroAsignado', select: 'nombre correo telefono rol' }
+        ]);
+
+        res.json({
+            message: "Especificaciones actualizadas exitosamente",
+            cita
+        });
+
+    } catch (error) {
+        console.error('Error en actualizarEspecificaciones:', error);
+        res.status(500).json({ message: "Error al actualizar especificaciones", error: error.message });
     }
 };

@@ -12,10 +12,8 @@ import {
 
 const router = Router();
 
-// Ruta para buscar material existente por nombre (usado en "comparar materiales nuevos con existentes" del diagrama)
-router.get('/buscar', buscarMaterialPorNombre);
+router.get('/buscar', authRequired, buscarMaterialPorNombre);
 
-// Ruta para actualizar precio de material (usado en "registrar precios de materiales" del diagrama)
 router.put('/actualizarPrecio/:id', authRequired, actualizarPrecioMaterial);
 
 // Rutas CRUD completas para administración de materiales

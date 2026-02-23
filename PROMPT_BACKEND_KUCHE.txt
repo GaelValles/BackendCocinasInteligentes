@@ -1,0 +1,1715 @@
+================================================================================
+PROMPT COMPLETO PARA DESARROLLO BACKEND - SISTEMA KÜCHE
+Stack: Node.js + Express + MongoDB + Mongoose
+================================================================================
+
+CONTEXTO GENERAL DEL PROYECTO
+================================================================================
+
+Estás trabajando en el backend de KÜCHE, una plataforma web para fabricación de cocinas inteligentes. El sistema tiene DOS MÓDULOS PRINCIPALES que funcionan de manera INDEPENDIENTE:
+
+MÓDULO 1: LEVANTAMIENTO RÁPIDO
+- Es una estimación simplificada para captar leads y clientes potenciales
+- Se completa en 5 pasos progresivos
+- Genera presupuestos aproximados con rangos de precio
+- Permite asignar el seguimiento a empleados
+
+MÓDULO 2: COTIZADOR PRO  
+- Es una cotización detallada y técnica con especificaciones completas
+- Incluye desglose exhaustivo de materiales, herrajes y mano de obra
+- Genera documentación técnica para el taller de fabricación
+- Tiene 4 secciones principales: datos, escenarios, refinamiento y cierre
+
+AMBOS MÓDULOS SON INDEPENDIENTES - no hay conversión automática entre ellos por ahora.
+
+
+================================================================================
+PARTE 1: MODELOS DE MONGOOSE - ESTRUCTURA DE BASE DE DATOS
+================================================================================
+
+--------------------------------------------------------------------------------
+MODELO 1: Cliente
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/Cliente.js
+
+Este modelo almacena la información de los clientes que solicitan cotizaciones o levantamientos.
+
+CAMPOS REQUERIDOS:
+
+- nombre: Texto obligatorio, sin espacios al inicio/final
+- direccion: Texto obligatorio
+- telefono: Texto obligatorio  
+- email: Texto opcional, debe convertirse a minúsculas automáticamente, sin espacios
+- tipoCliente: Enumeración con opciones "particular", "arquitecto", "constructora". Por defecto "particular"
+- proyectos: Array de referencias a documentos de Levantamiento (relación uno a muchos)
+- activo: Booleano que indica si el cliente está activo, por defecto true
+- timestamps: Debe incluir createdAt y updatedAt automáticamente
+
+INSTRUCCIONES TÉCNICAS:
+- Usar mongoose.Schema
+- El campo proyectos usa mongoose.Schema.Types.ObjectId con ref 'Levantamiento'
+- Habilitar timestamps con la opción timestamps: true en el schema
+- Exportar como modelo con nombre 'Cliente'
+
+
+--------------------------------------------------------------------------------
+MODELO 2: Levantamiento
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/Levantamiento.js
+
+Este es el modelo MÁS IMPORTANTE para el módulo de levantamiento rápido. Almacena toda la información capturada en los 5 pasos del proceso.
+
+ESQUEMA ANIDADO 1: historialEstado
+
+Este subesquema se usa dentro de Levantamiento para trackear cambios de estado.
+
+Campos del subesquema:
+- estado: Texto obligatorio que representa el nuevo estado
+- fecha: Fecha y hora, por defecto la fecha actual del sistema
+- usuario: Texto que indica quién hizo el cambio
+- notas: Texto opcional con comentarios adicionales
+- _id: false (no generar ID para subdocumentos)
+
+CAMPOS PRINCIPALES DEL LEVANTAMIENTO:
+
+PASO 1 - INFORMACIÓN DEL CLIENTE (objeto anidado llamado "cliente"):
+- cliente.nombre: Texto obligatorio
+- cliente.direccion: Texto obligatorio  
+- cliente.telefono: Texto obligatorio
+
+PASO 2 - GEOMETRÍA:
+- metrosLineales: Número obligatorio, debe ser mayor o igual a 0
+
+PASO 3 - NECESIDADES:
+- requiereIsla: Booleano, por defecto false
+- alacenasAltas: Booleano, por defecto false
+- tipoCubierta: Enumeración obligatoria con opciones exactas "Granito Básico", "Cuarzo", "Piedra Sinterizada"
+
+PASO 4 - SELECCIÓN DE ESCENARIO:
+- escenarioSeleccionado: Enumeración obligatoria con opciones "esencial", "tendencia", "premium"
+
+CAMPOS DE CÁLCULO (se calculan automáticamente):
+- precioBase: Número que almacena el cálculo de metrosLineales multiplicado por 5000
+- factorMaterial: Número decimal que representa el multiplicador del material
+- multiplicadorEscenario: Número decimal que representa el multiplicador del escenario
+- precioEstimado: Número que es el resultado del cálculo completo
+- rangoMin: Número que representa el precio mínimo (precioEstimado multiplicado por 0.93)
+- rangoMax: Número que representa el precio máximo (precioEstimado multiplicado por 1.08)
+
+PASO 5 - ASIGNACIÓN Y SEGUIMIENTO:
+- empleadoAsignado: Referencia ObjectId al modelo Usuario
+- estado: Enumeración con opciones "pendiente", "en_revision", "contactado", "cotizado", "rechazado", "archivado". Por defecto "pendiente"
+- historialEstados: Array del subesquema historialEstado definido arriba
+
+METADATA ADICIONAL:
+- notas: Texto opcional para comentarios generales
+- convertidoACotizacion: Booleano por defecto false
+- cotizacionId: Referencia ObjectId al modelo Cotizacion (si fue convertido)
+- timestamps: Activar createdAt y updatedAt
+
+MIDDLEWARE PRE-SAVE CRÍTICO:
+
+Este modelo DEBE tener un middleware que se ejecute antes de guardar (pre save hook) para calcular automáticamente los precios. La lógica es:
+
+CONSTANTES DE CÁLCULO:
+- Precio base por metro lineal: 5000 pesos mexicanos
+
+FACTORES DE MATERIAL (objeto JavaScript):
+- "Granito Básico" tiene factor 1.0
+- "Cuarzo" tiene factor 1.2
+- "Piedra Sinterizada" tiene factor 1.5
+
+MULTIPLICADORES DE ESCENARIO (objeto JavaScript):
+- "esencial" tiene multiplicador 0.9
+- "tendencia" tiene multiplicador 1.1
+- "premium" tiene multiplicador 1.35
+
+CÁLCULOS A REALIZAR EN EL MIDDLEWARE:
+1. precioBase = metrosLineales multiplicado por 5000
+2. factorMaterial = buscar en objeto factoresMaterial usando tipoCubierta, si no existe usar 1.0
+3. multiplicadorEscenario = buscar en objeto multiplicadoresEscenario usando escenarioSeleccionado, si no existe usar 1.0
+4. precioEstimado = precioBase multiplicado por factorMaterial multiplicado por multiplicadorEscenario
+5. rangoMin = redondear (precioEstimado multiplicado por 0.93)
+6. rangoMax = redondear (precioEstimado multiplicado por 1.08)
+
+Asignar todos estos valores calculados a los campos correspondientes del documento.
+
+Llamar a next() al final del middleware.
+
+INSTRUCCIONES TÉCNICAS:
+- Usar levantamientoSchema.pre('save', function(next) para el middleware
+- Dentro del middleware, this se refiere al documento que se está guardando
+- Usar Math.round para redondear rangoMin y rangoMax
+
+
+--------------------------------------------------------------------------------
+MODELO 3: Cotizacion
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/Cotizacion.js
+
+Este es el modelo MÁS COMPLEJO del sistema. Almacena cotizaciones detalladas con múltiples secciones.
+
+ESQUEMA ANIDADO 1: historialEstado
+
+Exactamente igual que en Levantamiento:
+- estado: Texto
+- fecha: Fecha por defecto Date.now
+- usuario: Texto
+- notas: Texto opcional
+- _id: false
+
+ESQUEMA ANIDADO 2: herrajeItem
+
+Este subesquema representa cada herraje seleccionado en la cotización.
+
+Campos:
+- herrajeId: Referencia ObjectId al modelo CatalogoHerraje
+- nombre: Texto con el nombre del herraje (copia para referencia)
+- precioUnitario: Número con el precio por unidad (copia para referencia)
+- enabled: Booleano que indica si está habilitado, por defecto false
+- cantidad: Número entero mayor o igual a 0, por defecto 0
+- _id: false
+
+CAMPOS PRINCIPALES DE LA COTIZACIÓN:
+
+SECCIÓN A - DATOS DEL PROYECTO:
+- cliente: Texto obligatorio con nombre del cliente
+- clienteRef: Referencia ObjectId opcional al modelo Cliente
+- tipoProyecto: Enumeración obligatoria con opciones "Cocina", "Closet", "vestidor", "Mueble para el baño"
+- ubicacion: Texto obligatorio (ciudad/estado)
+- fechaInstalacion: Fecha obligatoria
+- medidas: Objeto anidado obligatorio con:
+  - medidas.largo: Número obligatorio mayor o igual a 0
+  - medidas.alto: Número obligatorio mayor o igual a 0
+  - medidas.fondo: Número obligatorio mayor o igual a 0
+  - medidas.metrosLineales: Número obligatorio mayor o igual a 0
+
+SECCIÓN B - NIVEL DE ACABADOS:
+- escenarioSeleccionado: Enumeración con opciones "esencial", "tendencia", "premium"
+- multiplicadorEscenario: Número decimal calculado (0.92, 1.05 o 1.18)
+
+SECCIÓN C - MATERIALES:
+- materialBase: Enumeración obligatoria con opciones "melamina", "mdf", "tech"
+- materialBaseRef: Referencia ObjectId al modelo CatalogoMaterial
+- precioMaterialPorMetro: Número con el precio por metro (se obtiene del catálogo)
+- colorTextura: Enumeración obligatoria con opciones "Blanco Nieve", "Nogal Calido", "Gris Grafito", "Fresno Arena"
+- grosorTablero: Enumeración con opciones "16", "19", por defecto "16"
+- factorGrosor: Número decimal calculado (1.0 para 16mm, 1.08 para 19mm)
+
+SECCIÓN C - HERRAJES:
+- herrajes: Array del subesquema herrajeItem definido arriba
+
+SECCIÓN C - MANO DE OBRA Y EXTRAS:
+- manoDeObra: Número mayor o igual a 0, por defecto 0
+- flete: Número mayor o igual a 0, por defecto 0
+- instalacion: Número mayor o igual a 0, por defecto 0
+- desinstalacion: Número mayor o igual a 0, por defecto 0
+
+SECCIÓN D - CÁLCULOS FINALES (se calculan automáticamente):
+- subtotalMateriales: Número resultado del cálculo de materiales
+- subtotalHerrajes: Número suma de todos los herrajes habilitados
+- subtotalManoObra: Número suma de mano de obra, flete, instalación y desinstalación
+- precioFinal: Número suma de todos los subtotales
+
+ESTADO Y SEGUIMIENTO:
+- estado: Enumeración con opciones "borrador", "enviada", "aprobada", "en_produccion", "lista_instalacion", "instalada", "rechazada", "archivada". Por defecto "borrador"
+- historialEstados: Array del subesquema historialEstado
+
+METADATA ADICIONAL:
+- empleadoAsignado: Referencia ObjectId al modelo Usuario
+- notas: Texto opcional
+- origenLevantamiento: Referencia ObjectId al modelo Levantamiento (si proviene de uno)
+- timestamps: Activar createdAt y updatedAt
+
+MIDDLEWARE PRE-SAVE CRÍTICO:
+
+Este modelo DEBE tener un middleware que se ejecute antes de guardar para calcular automáticamente todos los precios. La lógica es:
+
+CÁLCULO 1 - FACTOR DE GROSOR:
+- Si grosorTablero es igual a "19" entonces factorGrosor = 1.08
+- Si grosorTablero es igual a "16" o cualquier otro valor entonces factorGrosor = 1.0
+
+CÁLCULO 2 - SUBTOTAL DE MATERIALES:
+subtotalMateriales = medidas.metrosLineales multiplicado por precioMaterialPorMetro (o 0 si no existe) multiplicado por factorGrosor
+
+CÁLCULO 3 - SUBTOTAL DE HERRAJES:
+Recorrer el array herrajes usando un reduce:
+- Para cada herraje en el array:
+  - Si enabled es true: sumar (cantidad multiplicado por precioUnitario)
+  - Si enabled es false: sumar 0
+- El resultado final es subtotalHerrajes
+
+CÁLCULO 4 - SUBTOTAL DE MANO DE OBRA:
+subtotalManoObra = (manoDeObra o 0) más (flete o 0) más (instalacion o 0) más (desinstalacion o 0)
+
+CÁLCULO 5 - PRECIO FINAL:
+precioFinal = subtotalMateriales más subtotalHerrajes más subtotalManoObra
+
+Asignar todos estos valores calculados a los campos correspondientes del documento.
+
+Llamar a next() al final del middleware.
+
+INSTRUCCIONES TÉCNICAS:
+- Usar cotizacionSchema.pre('save', function(next) para el middleware
+- Para el reduce de herrajes: this.herrajes.reduce((sum, item) => { ... }, 0)
+- Usar operador OR (||) para manejar valores undefined o null: (this.manoDeObra || 0)
+
+
+--------------------------------------------------------------------------------
+MODELO 4: CatalogoMaterial
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/CatalogoMaterial.js
+
+Este catálogo almacena los materiales base disponibles con sus precios configurables.
+
+CAMPOS:
+- id: Texto obligatorio y único (por ejemplo "melamina", "mdf", "tech")
+- nombre: Texto obligatorio (nombre descriptivo para mostrar)
+- precioMetroLineal: Número obligatorio mayor o igual a 0 (precio en pesos mexicanos)
+- activo: Booleano por defecto true (para desactivar sin eliminar)
+- descripcion: Texto opcional
+- timestamps: Activar createdAt y updatedAt
+
+DATOS INICIALES PARA EL SEED:
+Material 1: id "melamina", nombre "Melamina", precioMetroLineal 6500, activo true
+Material 2: id "mdf", nombre "MDF", precioMetroLineal 7800, activo true
+Material 3: id "tech", nombre "Tech", precioMetroLineal 9800, activo true
+
+
+--------------------------------------------------------------------------------
+MODELO 5: CatalogoHerraje
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/CatalogoHerraje.js
+
+Este catálogo almacena los herrajes y accesorios disponibles con sus precios configurables.
+
+CAMPOS:
+- id: Texto obligatorio y único (por ejemplo "correderas", "bisagras")
+- nombre: Texto obligatorio (nombre descriptivo para mostrar)
+- precioUnitario: Número obligatorio mayor o igual a 0 (precio en pesos mexicanos)
+- activo: Booleano por defecto true
+- descripcion: Texto opcional
+- categoria: Texto opcional para agrupar herrajes
+- timestamps: Activar createdAt y updatedAt
+
+DATOS INICIALES PARA EL SEED:
+Herraje 1: id "correderas", nombre "Correderas cierre suave", precioUnitario 500, activo true
+Herraje 2: id "bisagras", nombre "Bisagras 110° reforzadas", precioUnitario 140, activo true
+Herraje 3: id "jaladeras", nombre "Jaladeras minimalistas", precioUnitario 90, activo true
+Herraje 4: id "bote", nombre "Bote de basura extraíble", precioUnitario 1200, activo true
+Herraje 5: id "iluminacion", nombre "Iluminación LED interior", precioUnitario 780, activo true
+
+
+--------------------------------------------------------------------------------
+MODELO 6: Usuario
+--------------------------------------------------------------------------------
+
+Nombre del archivo: models/Usuario.js
+
+Este modelo almacena los empleados y arquitectos del sistema para asignación de proyectos.
+
+CAMPOS:
+- nombre: Texto obligatorio
+- email: Texto obligatorio, único, convertir a minúsculas automáticamente
+- rol: Enumeración obligatoria con opciones "admin", "arquitecto", "empleado"
+- activo: Booleano por defecto true
+- timestamps: Activar createdAt y updatedAt
+
+DATOS INICIALES PARA EL SEED:
+Usuario 1: nombre "Sofía Ramos", email "sofia@kuche.com", rol "arquitecto", activo true
+Usuario 2: nombre "Javier Méndez", email "javier@kuche.com", rol "arquitecto", activo true
+Usuario 3: nombre "Luisana Ortiz", email "luisana@kuche.com", rol "arquitecto", activo true
+Usuario 4: nombre "Marcos Vega", email "marcos@kuche.com", rol "arquitecto", activo true
+
+
+================================================================================
+PARTE 2: CONTROLADORES - LÓGICA DE NEGOCIO
+================================================================================
+
+--------------------------------------------------------------------------------
+CONTROLLER 1: LevantamientoController
+--------------------------------------------------------------------------------
+
+Nombre del archivo: controllers/levantamientoController.js
+
+Este controlador maneja TODAS las operaciones CRUD y acciones especiales de levantamientos.
+
+IMPORTACIONES NECESARIAS:
+- Modelo Levantamiento desde models/Levantamiento
+
+--------------------------------------------------------------------------------
+MÉTODO: crear (exports.crear)
+--------------------------------------------------------------------------------
+
+Este método crea un nuevo levantamiento en la base de datos.
+
+ENTRADA: req.body con los siguientes campos:
+- cliente (objeto con nombre, direccion, telefono)
+- metrosLineales (número)
+- requiereIsla (booleano opcional)
+- alacenasAltas (booleano opcional)
+- tipoCubierta (texto)
+- escenarioSeleccionado (texto)
+- empleadoAsignado (ID opcional)
+- notas (texto opcional)
+
+VALIDACIONES REQUERIDAS (retornar error 400 si fallan):
+
+1. Validar que cliente exista y tenga nombre, direccion y telefono
+   - Si falla: retornar status 400 con success false y message "Datos del cliente incompletos"
+
+2. Validar que metrosLineales exista y sea mayor a 0
+   - Si falla: retornar status 400 con success false y message "Metros lineales debe ser mayor a 0"
+
+3. Validar que tipoCubierta exista
+   - Si falla: retornar status 400 con success false y message "Tipo de cubierta es requerido"
+
+4. Validar que escenarioSeleccionado exista
+   - Si falla: retornar status 400 con success false y message "Escenario es requerido"
+
+PROCESO SI TODO ES VÁLIDO:
+
+1. Crear una nueva instancia de Levantamiento con:
+   - cliente: el objeto cliente del body
+   - metrosLineales: del body
+   - requiereIsla: del body o false por defecto
+   - alacenasAltas: del body o false por defecto
+   - tipoCubierta: del body
+   - escenarioSeleccionado: del body
+   - empleadoAsignado: del body si existe
+   - notas: del body si existe
+   - historialEstados: array con un objeto que tiene:
+     - estado: "pendiente"
+     - fecha: new Date()
+     - usuario: req.user.nombre si existe o "Sistema"
+
+2. Guardar el documento con await levantamiento.save()
+
+3. Retornar status 201 con:
+   - success: true
+   - data: el levantamiento guardado
+   - message: "Levantamiento creado exitosamente"
+
+MANEJO DE ERRORES:
+Todo el código debe estar en try-catch. Si hay error:
+- Hacer console.error con el error
+- Retornar status 500 con success false, message "Error al crear levantamiento" y error.message
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listar (exports.listar)
+--------------------------------------------------------------------------------
+
+Este método lista levantamientos con filtros opcionales y paginación.
+
+ENTRADA: req.query con filtros opcionales:
+- estado (texto)
+- empleadoAsignado (ID)
+- fechaDesde (fecha ISO)
+- fechaHasta (fecha ISO)
+- page (número, por defecto 1)
+- limit (número, por defecto 10)
+
+PROCESO:
+
+1. Crear objeto filtros vacío
+
+2. Aplicar filtros si existen en query:
+   - Si hay estado: filtros.estado = estado
+   - Si hay empleadoAsignado: filtros.empleadoAsignado = empleadoAsignado
+   - Si hay fechaDesde o fechaHasta:
+     - Crear filtros.createdAt como objeto vacío
+     - Si hay fechaDesde: filtros.createdAt.$gte = new Date(fechaDesde)
+     - Si hay fechaHasta: filtros.createdAt.$lte = new Date(fechaHasta)
+
+3. Calcular skip = (page - 1) multiplicado por limit
+
+4. Ejecutar dos queries en paralelo con Promise.all:
+   Query 1: Levantamiento.find(filtros)
+            .populate('empleadoAsignado', 'nombre email')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit))
+   Query 2: Levantamiento.countDocuments(filtros)
+
+5. Retornar status 200 con:
+   - success: true
+   - data: array de levantamientos
+   - pagination: objeto con:
+     - total: el count total
+     - page: parseInt(page)
+     - pages: Math.ceil(total / limit)
+     - limit: parseInt(limit)
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con success false y message "Error al listar levantamientos"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: obtenerPorId (exports.obtenerPorId)
+--------------------------------------------------------------------------------
+
+Este método obtiene un levantamiento específico por su ID.
+
+ENTRADA: req.params.id (el ID del levantamiento)
+
+PROCESO:
+
+1. Buscar con Levantamiento.findById(req.params.id)
+   - Hacer populate de 'empleadoAsignado' seleccionando campos 'nombre email rol'
+   - Hacer populate de 'cotizacionId'
+
+2. Si no se encuentra el levantamiento:
+   - Retornar status 404 con success false y message "Levantamiento no encontrado"
+
+3. Si se encuentra:
+   - Retornar status 200 con success true y data: levantamiento
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con success false y message "Error al obtener levantamiento"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: actualizar (exports.actualizar)
+--------------------------------------------------------------------------------
+
+Este método actualiza un levantamiento existente.
+
+ENTRADA: 
+- req.params.id (el ID del levantamiento)
+- req.body (campos a actualizar)
+
+PROCESO:
+
+1. Usar Levantamiento.findByIdAndUpdate con:
+   - Primer parámetro: req.params.id
+   - Segundo parámetro: req.body
+   - Tercer parámetro: { new: true, runValidators: true }
+
+2. Si no se encuentra:
+   - Retornar status 404 con success false y message "Levantamiento no encontrado"
+
+3. Si se encuentra y actualiza:
+   - Retornar status 200 con success true, data: levantamiento actualizado, message "Levantamiento actualizado exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con success false
+
+
+--------------------------------------------------------------------------------
+MÉTODO: cambiarEstado (exports.cambiarEstado)
+--------------------------------------------------------------------------------
+
+Este método cambia el estado de un levantamiento y agrega entrada al historial.
+
+ENTRADA:
+- req.params.id (el ID del levantamiento)
+- req.body.estado (nuevo estado)
+- req.body.notas (opcional, notas del cambio)
+
+PROCESO:
+
+1. Definir array estadosValidos con: "pendiente", "en_revision", "contactado", "cotizado", "rechazado", "archivado"
+
+2. Validar que el estado recibido esté en estadosValidos
+   - Si no está: retornar status 400 con success false y message "Estado no válido"
+
+3. Buscar el levantamiento con Levantamiento.findById(req.params.id)
+
+4. Si no existe:
+   - Retornar status 404 con success false y message "Levantamiento no encontrado"
+
+5. Si existe:
+   - Asignar levantamiento.estado = estado del body
+   - Hacer push al array historialEstados con objeto:
+     - estado: el nuevo estado
+     - fecha: new Date()
+     - usuario: req.user.nombre si existe o "Sistema"
+     - notas: del body si existe
+
+6. Guardar con await levantamiento.save()
+
+7. Retornar status 200 con success true, data: levantamiento, message "Estado actualizado exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: asignarEmpleado (exports.asignarEmpleado)
+--------------------------------------------------------------------------------
+
+Este método asigna un empleado a un levantamiento.
+
+ENTRADA:
+- req.params.id (el ID del levantamiento)
+- req.body.empleadoId (el ID del empleado a asignar)
+
+PROCESO:
+
+1. Usar Levantamiento.findByIdAndUpdate con:
+   - Primer parámetro: req.params.id
+   - Segundo parámetro: objeto con empleadoAsignado: empleadoId y estado: "en_revision"
+   - Tercer parámetro: { new: true }
+   - Encadenar .populate('empleadoAsignado', 'nombre email')
+
+2. Si no se encuentra:
+   - Retornar status 404 con success false y message "Levantamiento no encontrado"
+
+3. Si se encuentra:
+   - Retornar status 200 con success true, data: levantamiento, message "Empleado asignado exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: eliminar (exports.eliminar)
+--------------------------------------------------------------------------------
+
+Este método elimina un levantamiento de la base de datos.
+
+ENTRADA: req.params.id (el ID del levantamiento)
+
+PROCESO:
+
+1. Usar Levantamiento.findByIdAndDelete(req.params.id)
+
+2. Si no se encuentra:
+   - Retornar status 404 con success false y message "Levantamiento no encontrado"
+
+3. Si se encuentra y elimina:
+   - Retornar status 200 con success true y message "Levantamiento eliminado exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: convertirACotizacion (exports.convertirACotizacion)
+--------------------------------------------------------------------------------
+
+Este método convierte un levantamiento en cotización (por implementar después).
+
+Por ahora solo retornar status 501 con success false y message "Función no implementada aún"
+
+
+--------------------------------------------------------------------------------
+CONTROLLER 2: CotizacionController
+--------------------------------------------------------------------------------
+
+Nombre del archivo: controllers/cotizacionController.js
+
+Este controlador maneja TODAS las operaciones de cotizaciones.
+
+IMPORTACIONES NECESARIAS:
+- Modelo Cotizacion desde models/Cotizacion
+- Modelo CatalogoMaterial desde models/CatalogoMaterial
+- Modelo CatalogoHerraje desde models/CatalogoHerraje
+
+
+--------------------------------------------------------------------------------
+MÉTODO: crear (exports.crear)
+--------------------------------------------------------------------------------
+
+Este método crea una nueva cotización en la base de datos.
+
+ENTRADA: req.body con los siguientes campos:
+- cliente (texto)
+- tipoProyecto (texto)
+- ubicacion (texto)
+- fechaInstalacion (fecha)
+- medidas (objeto con largo, alto, fondo, metrosLineales)
+- escenarioSeleccionado (texto opcional)
+- materialBase (texto)
+- colorTextura (texto)
+- grosorTablero (texto opcional)
+- herrajes (array opcional)
+- manoDeObra (número opcional)
+- flete (número opcional)
+- instalacion (número opcional)
+- desinstalacion (número opcional)
+- notas (texto opcional)
+
+VALIDACIONES REQUERIDAS (retornar error 400 si fallan):
+
+1. Validar que cliente, tipoProyecto, ubicacion y fechaInstalacion existan
+   - Si falla: retornar status 400 con success false y message "Datos del proyecto incompletos"
+
+2. Validar que medidas exista y tenga largo, alto, fondo y metrosLineales
+   - Si falla: retornar status 400 con success false y message "Medidas incompletas"
+
+3. Validar que materialBase y colorTextura existan
+   - Si falla: retornar status 400 con success false y message "Material base y color son requeridos"
+
+PROCESO SI TODO ES VÁLIDO:
+
+1. Buscar el material en el catálogo:
+   - Usar CatalogoMaterial.findOne con filtros: id igual a materialBase Y activo igual a true
+
+2. Si no se encuentra el material:
+   - Retornar status 400 con success false y message "Material no encontrado en catálogo"
+
+3. Si se encuentra el material, crear objeto multiplicadoresEscenario con:
+   - "esencial": 0.92
+   - "tendencia": 1.05
+   - "premium": 1.18
+
+4. Crear nueva instancia de Cotizacion con:
+   - cliente: del body
+   - tipoProyecto: del body
+   - ubicacion: del body
+   - fechaInstalacion: del body
+   - medidas: del body
+   - escenarioSeleccionado: del body
+   - multiplicadorEscenario: buscar en objeto multiplicadoresEscenario usando escenarioSeleccionado
+   - materialBase: del body
+   - materialBaseRef: materialCatalogo._id
+   - precioMaterialPorMetro: materialCatalogo.precioMetroLineal
+   - colorTextura: del body
+   - grosorTablero: del body o "16" por defecto
+   - herrajes: del body o array vacío
+   - manoDeObra: del body o 0
+   - flete: del body o 0
+   - instalacion: del body o 0
+   - desinstalacion: del body o 0
+   - notas: del body
+   - estado: "borrador"
+   - historialEstados: array con un objeto:
+     - estado: "borrador"
+     - fecha: new Date()
+     - usuario: req.user.nombre si existe o "Sistema"
+
+5. Guardar con await cotizacion.save()
+
+6. Retornar status 201 con:
+   - success: true
+   - data: la cotización guardada
+   - message: "Cotización creada exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con success false y message "Error al crear cotización"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: guardarBorrador (exports.guardarBorrador)
+--------------------------------------------------------------------------------
+
+Este método guarda una cotización como borrador.
+
+PROCESO:
+1. Asignar req.body.estado = "borrador"
+2. Llamar a exports.crear(req, res) y retornar su resultado
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con message "Error al guardar borrador"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listar (exports.listar)
+--------------------------------------------------------------------------------
+
+Este método lista cotizaciones con filtros opcionales y paginación.
+
+ENTRADA: req.query con:
+- estado (texto opcional)
+- tipoProyecto (texto opcional)
+- fechaDesde (fecha opcional)
+- fechaHasta (fecha opcional)
+- page (número, por defecto 1)
+- limit (número, por defecto 10)
+
+PROCESO:
+
+1. Crear objeto filtros vacío
+
+2. Aplicar filtros si existen:
+   - Si hay estado: filtros.estado = estado
+   - Si hay tipoProyecto: filtros.tipoProyecto = tipoProyecto
+   - Si hay fechaDesde o fechaHasta:
+     - Crear filtros.createdAt como objeto
+     - Si fechaDesde: filtros.createdAt.$gte = new Date(fechaDesde)
+     - Si fechaHasta: filtros.createdAt.$lte = new Date(fechaHasta)
+
+3. Calcular skip = (page - 1) multiplicado por limit
+
+4. Ejecutar dos queries en paralelo con Promise.all:
+   Query 1: Cotizacion.find(filtros)
+            .populate('empleadoAsignado', 'nombre email')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(parseInt(limit))
+   Query 2: Cotizacion.countDocuments(filtros)
+
+5. Retornar status 200 con:
+   - success: true
+   - data: array de cotizaciones
+   - pagination: objeto con total, page, pages, limit
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: obtenerPorId (exports.obtenerPorId)
+--------------------------------------------------------------------------------
+
+Este método obtiene una cotización específica por ID.
+
+ENTRADA: req.params.id
+
+PROCESO:
+
+1. Buscar con Cotizacion.findById(req.params.id)
+   - Hacer populate de 'empleadoAsignado' seleccionando 'nombre email rol'
+   - Hacer populate de 'materialBaseRef'
+   - Hacer populate de 'herrajes.herrajeId'
+
+2. Si no existe:
+   - Retornar status 404 con success false y message "Cotización no encontrada"
+
+3. Si existe:
+   - Retornar status 200 con success true y data: cotización
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: actualizar (exports.actualizar)
+--------------------------------------------------------------------------------
+
+Este método actualiza una cotización existente.
+
+ENTRADA:
+- req.params.id
+- req.body (campos a actualizar)
+
+PROCESO:
+
+1. Si req.body.materialBase existe:
+   - Buscar CatalogoMaterial.findOne con id igual a req.body.materialBase y activo true
+   - Si se encuentra:
+     - Asignar req.body.precioMaterialPorMetro = materialCatalogo.precioMetroLineal
+     - Asignar req.body.materialBaseRef = materialCatalogo._id
+
+2. Usar Cotizacion.findByIdAndUpdate con:
+   - req.params.id
+   - req.body
+   - { new: true, runValidators: true }
+
+3. Si no se encuentra:
+   - Retornar status 404 con success false y message "Cotización no encontrada"
+
+4. Si se actualiza:
+   - Retornar status 200 con success true, data: cotización, message "Cotización actualizada exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: cambiarEstado (exports.cambiarEstado)
+--------------------------------------------------------------------------------
+
+Este método cambia el estado de una cotización.
+
+ENTRADA:
+- req.params.id
+- req.body.estado (nuevo estado)
+- req.body.notas (opcional)
+
+PROCESO:
+
+1. Definir array estadosValidos con: "borrador", "enviada", "aprobada", "en_produccion", "lista_instalacion", "instalada", "rechazada", "archivada"
+
+2. Validar que estado esté en estadosValidos
+   - Si no: retornar status 400 con success false y message "Estado no válido"
+
+3. Buscar Cotizacion.findById(req.params.id)
+
+4. Si no existe:
+   - Retornar status 404 con success false y message "Cotización no encontrada"
+
+5. Si existe:
+   - Asignar cotizacion.estado = nuevo estado
+   - Hacer push a historialEstados con:
+     - estado: nuevo estado
+     - fecha: new Date()
+     - usuario: req.user.nombre o "Sistema"
+     - notas: del body si existe
+
+6. Guardar con await cotizacion.save()
+
+7. Retornar status 200 con success true, data: cotización, message "Estado actualizado exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: eliminar (exports.eliminar)
+--------------------------------------------------------------------------------
+
+Este método elimina una cotización.
+
+ENTRADA: req.params.id
+
+PROCESO:
+
+1. Usar Cotizacion.findByIdAndDelete(req.params.id)
+
+2. Si no existe:
+   - Retornar status 404 con success false y message "Cotización no encontrada"
+
+3. Si se elimina:
+   - Retornar status 200 con success true y message "Cotización eliminada exitosamente"
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+CONTROLLER 3: CatalogoController
+--------------------------------------------------------------------------------
+
+Nombre del archivo: controllers/catalogoController.js
+
+Este controlador maneja los endpoints de catálogos.
+
+IMPORTACIONES NECESARIAS:
+- Modelo CatalogoMaterial desde models/CatalogoMaterial
+- Modelo CatalogoHerraje desde models/CatalogoHerraje
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listarMateriales (exports.listarMateriales)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Buscar CatalogoMaterial.find con filtro { activo: true }
+   - Seleccionar solo campos: 'id nombre precioMetroLineal descripcion'
+   - Ordenar por nombre ascendente
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array de materiales
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con message "Error al listar materiales"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listarHerrajes (exports.listarHerrajes)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Buscar CatalogoHerraje.find con filtro { activo: true }
+   - Seleccionar solo campos: 'id nombre precioUnitario descripcion categoria'
+   - Ordenar por categoria ascendente, luego nombre ascendente
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array de herrajes
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con message "Error al listar herrajes"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listarColores (exports.listarColores)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Crear array colores con los valores exactos:
+   - "Blanco Nieve"
+   - "Nogal Calido"
+   - "Gris Grafito"
+   - "Fresno Arena"
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array colores
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listarTiposProyecto (exports.listarTiposProyecto)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Crear array tipos con los valores exactos:
+   - "Cocina"
+   - "Closet"
+   - "vestidor"
+   - "Mueble para el baño"
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array tipos
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listarTiposCubierta (exports.listarTiposCubierta)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Crear array tipos con los valores exactos:
+   - "Granito Básico"
+   - "Cuarzo"
+   - "Piedra Sinterizada"
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array tipos
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+--------------------------------------------------------------------------------
+CONTROLLER 4: UsuarioController
+--------------------------------------------------------------------------------
+
+Nombre del archivo: controllers/usuarioController.js
+
+Este controlador maneja los endpoints de usuarios/empleados.
+
+IMPORTACIONES NECESARIAS:
+- Modelo Usuario desde models/Usuario
+
+
+--------------------------------------------------------------------------------
+MÉTODO: listar (exports.listar)
+--------------------------------------------------------------------------------
+
+PROCESO:
+
+1. Buscar Usuario.find con filtro { activo: true }
+   - Seleccionar solo campos: 'nombre email rol'
+   - Ordenar por nombre ascendente
+
+2. Retornar status 200 con:
+   - success: true
+   - data: array de usuarios
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500 con message "Error al listar usuarios"
+
+
+--------------------------------------------------------------------------------
+MÉTODO: obtenerPorId (exports.obtenerPorId)
+--------------------------------------------------------------------------------
+
+ENTRADA: req.params.id
+
+PROCESO:
+
+1. Buscar Usuario.findById(req.params.id)
+   - Seleccionar solo campos: 'nombre email rol'
+
+2. Si no existe:
+   - Retornar status 404 con success false y message "Usuario no encontrado"
+
+3. Si existe:
+   - Retornar status 200 con success true y data: usuario
+
+MANEJO DE ERRORES:
+Try-catch, si error retornar status 500
+
+
+================================================================================
+PARTE 3: RUTAS - ENDPOINTS DE LA API
+================================================================================
+
+--------------------------------------------------------------------------------
+RUTAS: Levantamientos
+--------------------------------------------------------------------------------
+
+Nombre del archivo: routes/levantamientos.js
+
+CONFIGURACIÓN:
+- Importar express
+- Crear router con express.Router()
+- Importar levantamientoController desde controllers/levantamientoController
+
+DEFINIR LAS SIGUIENTES RUTAS:
+
+1. POST a ruta raíz "/"
+   - Handler: levantamientoController.crear
+   - Crea nuevo levantamiento
+
+2. GET a ruta raíz "/"
+   - Handler: levantamientoController.listar
+   - Lista levantamientos con filtros y paginación
+
+3. GET a ruta "/:id"
+   - Handler: levantamientoController.obtenerPorId
+   - Obtiene un levantamiento por ID
+
+4. PATCH a ruta "/:id"
+   - Handler: levantamientoController.actualizar
+   - Actualiza un levantamiento
+
+5. DELETE a ruta "/:id"
+   - Handler: levantamientoController.eliminar
+   - Elimina un levantamiento
+
+6. PATCH a ruta "/:id/estado"
+   - Handler: levantamientoController.cambiarEstado
+   - Cambia el estado del levantamiento
+
+7. PATCH a ruta "/:id/asignar"
+   - Handler: levantamientoController.asignarEmpleado
+   - Asigna empleado al levantamiento
+
+8. POST a ruta "/:id/convertir-cotizacion"
+   - Handler: levantamientoController.convertirACotizacion
+   - Convierte levantamiento a cotización
+
+Exportar el router
+
+
+--------------------------------------------------------------------------------
+RUTAS: Cotizaciones
+--------------------------------------------------------------------------------
+
+Nombre del archivo: routes/cotizaciones.js
+
+CONFIGURACIÓN:
+- Importar express
+- Crear router con express.Router()
+- Importar cotizacionController desde controllers/cotizacionController
+
+DEFINIR LAS SIGUIENTES RUTAS:
+
+1. POST a ruta raíz "/"
+   - Handler: cotizacionController.crear
+   - Crea nueva cotización
+
+2. POST a ruta "/borrador"
+   - Handler: cotizacionController.guardarBorrador
+   - Guarda cotización como borrador
+
+3. GET a ruta raíz "/"
+   - Handler: cotizacionController.listar
+   - Lista cotizaciones con filtros
+
+4. GET a ruta "/:id"
+   - Handler: cotizacionController.obtenerPorId
+   - Obtiene cotización por ID
+
+5. PATCH a ruta "/:id"
+   - Handler: cotizacionController.actualizar
+   - Actualiza cotización
+
+6. DELETE a ruta "/:id"
+   - Handler: cotizacionController.eliminar
+   - Elimina cotización
+
+7. PATCH a ruta "/:id/estado"
+   - Handler: cotizacionController.cambiarEstado
+   - Cambia estado de cotización
+
+Exportar el router
+
+
+--------------------------------------------------------------------------------
+RUTAS: Catálogos
+--------------------------------------------------------------------------------
+
+Nombre del archivo: routes/catalogos.js
+
+CONFIGURACIÓN:
+- Importar express
+- Crear router con express.Router()
+- Importar catalogoController desde controllers/catalogoController
+
+DEFINIR LAS SIGUIENTES RUTAS:
+
+1. GET a ruta "/materiales"
+   - Handler: catalogoController.listarMateriales
+
+2. GET a ruta "/herrajes"
+   - Handler: catalogoController.listarHerrajes
+
+3. GET a ruta "/colores"
+   - Handler: catalogoController.listarColores
+
+4. GET a ruta "/tipos-proyecto"
+   - Handler: catalogoController.listarTiposProyecto
+
+5. GET a ruta "/tipos-cubierta"
+   - Handler: catalogoController.listarTiposCubierta
+
+Exportar el router
+
+
+--------------------------------------------------------------------------------
+RUTAS: Usuarios/Empleados
+--------------------------------------------------------------------------------
+
+Nombre del archivo: routes/usuarios.js
+
+CONFIGURACIÓN:
+- Importar express
+- Crear router con express.Router()
+- Importar usuarioController desde controllers/usuarioController
+
+DEFINIR LAS SIGUIENTES RUTAS:
+
+1. GET a ruta raíz "/"
+   - Handler: usuarioController.listar
+   - Lista todos los usuarios activos
+
+2. GET a ruta "/:id"
+   - Handler: usuarioController.obtenerPorId
+   - Obtiene usuario por ID
+
+Exportar el router
+
+
+================================================================================
+PARTE 4: CONFIGURACIÓN PRINCIPAL DEL SERVIDOR
+================================================================================
+
+--------------------------------------------------------------------------------
+ARCHIVO: app.js o server.js
+--------------------------------------------------------------------------------
+
+Este es el archivo principal que inicia el servidor Express.
+
+IMPORTACIONES NECESARIAS:
+- express
+- cors
+- mongoose
+
+CONFIGURACIÓN DEL SERVIDOR:
+
+1. Crear app con express()
+
+2. CONFIGURAR MIDDLEWARES:
+   - app.use(cors()) para permitir peticiones cross-origin
+   - app.use(express.json()) para parsear JSON en body
+   - app.use(express.urlencoded({ extended: true })) para parsear form data
+
+3. CONEXIÓN A MONGODB:
+   - Usar mongoose.connect con:
+     - URI: process.env.MONGODB_URI o 'mongodb://localhost:27017/kuche' como fallback
+     - Opciones: { useNewUrlParser: true, useUnifiedTopology: true }
+   - En el .then: hacer console.log con mensaje "✅ MongoDB conectado"
+   - En el .catch: hacer console.error con "❌ Error de conexión MongoDB:" y el error
+
+4. MONTAR LAS RUTAS:
+   - app.use('/api/levantamientos', require('./routes/levantamientos'))
+   - app.use('/api/cotizaciones', require('./routes/cotizaciones'))
+   - app.use('/api/catalogos', require('./routes/catalogos'))
+   - app.use('/api/usuarios', require('./routes/usuarios'))
+   - app.use('/api/empleados', require('./routes/usuarios')) esto es un alias para la misma ruta
+
+5. MANEJO DE ERRORES GLOBAL:
+   - Middleware de error con 4 parámetros: (err, req, res, next)
+   - Hacer console.error del error.stack
+   - Retornar res.status(500).json con:
+     - success: false
+     - message: "Error interno del servidor"
+     - error: mostrar err.message solo si NODE_ENV es 'development'
+
+6. INICIAR SERVIDOR:
+   - Definir PORT = process.env.PORT o 3001 como fallback
+   - app.listen(PORT, callback que hace console.log "🚀 Servidor corriendo en puerto PORT")
+
+7. Exportar app
+
+
+================================================================================
+PARTE 5: SCRIPT DE SEED PARA DATOS INICIALES
+================================================================================
+
+--------------------------------------------------------------------------------
+ARCHIVO: scripts/seedCatalogos.js
+--------------------------------------------------------------------------------
+
+Este script inicializa la base de datos con datos de catálogos y usuarios.
+
+IMPORTACIONES NECESARIAS:
+- mongoose
+- CatalogoMaterial desde models/CatalogoMaterial
+- CatalogoHerraje desde models/CatalogoHerraje
+- Usuario desde models/Usuario
+
+DEFINIR ARRAYS DE DATOS:
+
+ARRAY materiales con 3 objetos:
+Objeto 1: { id: 'melamina', nombre: 'Melamina', precioMetroLineal: 6500, activo: true }
+Objeto 2: { id: 'mdf', nombre: 'MDF', precioMetroLineal: 7800, activo: true }
+Objeto 3: { id: 'tech', nombre: 'Tech', precioMetroLineal: 9800, activo: true }
+
+ARRAY herrajes con 5 objetos:
+Objeto 1: { id: 'correderas', nombre: 'Correderas cierre suave', precioUnitario: 500, activo: true }
+Objeto 2: { id: 'bisagras', nombre: 'Bisagras 110° reforzadas', precioUnitario: 140, activo: true }
+Objeto 3: { id: 'jaladeras', nombre: 'Jaladeras minimalistas', precioUnitario: 90, activo: true }
+Objeto 4: { id: 'bote', nombre: 'Bote de basura extraíble', precioUnitario: 1200, activo: true }
+Objeto 5: { id: 'iluminacion', nombre: 'Iluminación LED interior', precioUnitario: 780, activo: true }
+
+ARRAY usuarios con 4 objetos:
+Objeto 1: { nombre: 'Sofía Ramos', email: 'sofia@kuche.com', rol: 'arquitecto', activo: true }
+Objeto 2: { nombre: 'Javier Méndez', email: 'javier@kuche.com', rol: 'arquitecto', activo: true }
+Objeto 3: { nombre: 'Luisana Ortiz', email: 'luisana@kuche.com', rol: 'arquitecto', activo: true }
+Objeto 4: { nombre: 'Marcos Vega', email: 'marcos@kuche.com', rol: 'arquitecto', activo: true }
+
+FUNCIÓN ASYNC seed():
+
+PROCESO:
+
+1. Dentro de try:
+
+   a. Conectar a MongoDB con await mongoose.connect('mongodb://localhost:27017/kuche')
+   b. Console.log 'Conectado a MongoDB'
+
+   c. Limpiar colecciones existentes:
+      - await CatalogoMaterial.deleteMany({})
+      - await CatalogoHerraje.deleteMany({})
+      - await Usuario.deleteMany({})
+
+   d. Insertar datos:
+      - await CatalogoMaterial.insertMany(materiales)
+      - Console.log '✅ Materiales insertados'
+      - await CatalogoHerraje.insertMany(herrajes)
+      - Console.log '✅ Herrajes insertados'
+      - await Usuario.insertMany(usuarios)
+      - Console.log '✅ Usuarios insertados'
+
+   e. Console.log '🎉 Seed completado'
+   f. process.exit(0)
+
+2. En el catch:
+   a. Console.error '❌ Error en seed:' y el error
+   b. process.exit(1)
+
+Llamar a la función seed() al final del archivo
+
+EJECUCIÓN:
+Este script se ejecuta con el comando: node scripts/seedCatalogos.js
+
+
+================================================================================
+PARTE 6: FORMATO DE RESPUESTAS DEL BACKEND
+================================================================================
+
+TODAS las respuestas del backend deben seguir un formato consistente para facilitar el manejo en el frontend.
+
+--------------------------------------------------------------------------------
+RESPUESTA EXITOSA (status 200 o 201):
+--------------------------------------------------------------------------------
+
+Estructura del JSON:
+{
+  "success": true,
+  "data": [objeto o array con los datos solicitados],
+  "message": "Mensaje descriptivo opcional"
+}
+
+Para listados con paginación:
+{
+  "success": true,
+  "data": [array de elementos],
+  "pagination": {
+    "total": número total de documentos,
+    "page": página actual,
+    "pages": total de páginas,
+    "limit": elementos por página
+  }
+}
+
+
+--------------------------------------------------------------------------------
+RESPUESTA DE ERROR (status 400, 404, 500):
+--------------------------------------------------------------------------------
+
+Estructura del JSON:
+{
+  "success": false,
+  "message": "Mensaje descriptivo del error",
+  "error": "Detalle técnico del error (solo en development)"
+}
+
+CÓDIGOS DE STATUS A USAR:
+- 200: Operación exitosa (GET, PUT, PATCH, DELETE)
+- 201: Recurso creado exitosamente (POST)
+- 400: Error de validación o datos incorrectos del cliente
+- 404: Recurso no encontrado
+- 500: Error interno del servidor
+- 501: Funcionalidad no implementada
+
+
+================================================================================
+PARTE 7: VARIABLES DE ENTORNO
+================================================================================
+
+Crear un archivo .env en la raíz del proyecto con las siguientes variables:
+
+MONGODB_URI=mongodb://localhost:27017/kuche
+PORT=3001
+NODE_ENV=development
+
+Estas variables se acceden en el código con process.env.NOMBRE_VARIABLE
+
+IMPORTANTE: Agregar .env al archivo .gitignore para no subir credenciales al repositorio.
+
+
+================================================================================
+PARTE 8: DEPENDENCIAS DE NPM REQUERIDAS
+================================================================================
+
+El archivo package.json debe incluir las siguientes dependencias:
+
+DEPENDENCIAS DE PRODUCCIÓN:
+- express: Framework web para Node.js
+- mongoose: ODM para MongoDB
+- cors: Middleware para habilitar CORS
+- dotenv: Para cargar variables de entorno desde .env
+
+DEPENDENCIAS DE DESARROLLO (opcionales):
+- nodemon: Para reiniciar automáticamente el servidor en desarrollo
+
+INSTALAR CON:
+npm install express mongoose cors dotenv
+npm install --save-dev nodemon
+
+SCRIPTS EN package.json:
+- "start": "node app.js"
+- "dev": "nodemon app.js"
+- "seed": "node scripts/seedCatalogos.js"
+
+
+================================================================================
+PARTE 9: ESTRUCTURA DE CARPETAS DEL PROYECTO
+================================================================================
+
+La estructura de carpetas del backend debe ser:
+
+proyecto-backend/
+├── models/
+│   ├── Cliente.js
+│   ├── Levantamiento.js
+│   ├── Cotizacion.js
+│   ├── CatalogoMaterial.js
+│   ├── CatalogoHerraje.js
+│   └── Usuario.js
+├── controllers/
+│   ├── levantamientoController.js
+│   ├── cotizacionController.js
+│   ├── catalogoController.js
+│   └── usuarioController.js
+├── routes/
+│   ├── levantamientos.js
+│   ├── cotizaciones.js
+│   ├── catalogos.js
+│   └── usuarios.js
+├── scripts/
+│   └── seedCatalogos.js
+├── .env
+├── .gitignore
+├── package.json
+├── app.js (o server.js)
+└── README.md
+
+
+================================================================================
+PARTE 10: CHECKLIST DE VALIDACIÓN COMPLETO
+================================================================================
+
+MODELOS:
+[ ] Cliente con todos los campos y validaciones
+[ ] Levantamiento con todos los campos, enums correctos y middleware pre-save
+[ ] Cotizacion con todos los campos, schemas anidados y middleware pre-save
+[ ] CatalogoMaterial con campos y validaciones
+[ ] CatalogoHerraje con campos y validaciones
+[ ] Usuario con campos y validaciones
+[ ] Todos los modelos tienen timestamps activados
+[ ] Todas las referencias (ObjectId) apuntan a los modelos correctos
+
+CONTROLADORES:
+[ ] LevantamientoController con 8 métodos completos
+[ ] CotizacionController con 7 métodos completos
+[ ] CatalogoController con 5 métodos completos
+[ ] UsuarioController con 2 métodos completos
+[ ] Todos los métodos tienen try-catch
+[ ] Todas las validaciones están implementadas
+[ ] Todos los responses siguen el formato consistente
+[ ] Todos los populate están en los métodos correctos
+
+RUTAS:
+[ ] routes/levantamientos.js con 8 rutas
+[ ] routes/cotizaciones.js con 7 rutas
+[ ] routes/catalogos.js con 5 rutas
+[ ] routes/usuarios.js con 2 rutas
+[ ] Todas las rutas están montadas en app.js correctamente
+
+SERVIDOR:
+[ ] app.js tiene todos los middlewares necesarios
+[ ] Conexión a MongoDB configurada correctamente
+[ ] CORS habilitado
+[ ] Manejo de errores global implementado
+[ ] Puerto configurado con variable de entorno
+
+SEED:
+[ ] Script de seed crea materiales correctos con precios exactos
+[ ] Script de seed crea herrajes correctos con precios exactos
+[ ] Script de seed crea usuarios de prueba
+[ ] Script limpia colecciones antes de insertar
+
+FUNCIONAMIENTO:
+[ ] El middleware pre-save de Levantamiento calcula precios correctamente
+[ ] El middleware pre-save de Cotizacion calcula todos los subtotales
+[ ] Los factores y multiplicadores coinciden con los del frontend
+[ ] El historial de estados se actualiza correctamente
+[ ] Los populate funcionan sin errores
+[ ] La paginación retorna los datos correctos
+
+
+================================================================================
+PARTE 11: PUNTOS CRÍTICOS A VERIFICAR
+================================================================================
+
+CÁLCULOS AUTOMÁTICOS:
+
+1. En Levantamiento:
+   - Factor material "Granito Básico" = 1.0
+   - Factor material "Cuarzo" = 1.2
+   - Factor material "Piedra Sinterizada" = 1.5
+   - Multiplicador "esencial" = 0.9
+   - Multiplicador "tendencia" = 1.1
+   - Multiplicador "premium" = 1.35
+   - Precio base = metrosLineales x 5000
+   - Precio estimado = precioBase x factorMaterial x multiplicadorEscenario
+   - Rango mínimo = precioEstimado x 0.93
+   - Rango máximo = precioEstimado x 1.08
+
+2. En Cotizacion:
+   - Factor grosor "16" = 1.0
+   - Factor grosor "19" = 1.08
+   - Multiplicador "esencial" = 0.92
+   - Multiplicador "tendencia" = 1.05
+   - Multiplicador "premium" = 1.18
+   - Subtotal materiales = metrosLineales x precioMaterialPorMetro x factorGrosor
+   - Subtotal herrajes = suma de (cantidad x precioUnitario) solo de herrajes enabled
+   - Subtotal mano obra = suma de manoDeObra + flete + instalacion + desinstalacion
+   - Precio final = subtotalMateriales + subtotalHerrajes + subtotalManoObra
+
+VALIDACIONES IMPORTANTES:
+
+1. Metros lineales siempre mayor a 0
+2. Todas las medidas (largo, alto, fondo) mayores o iguales a 0
+3. Fechas en formato válido ISO
+4. Estados solo pueden ser los valores del enum correspondiente
+5. Material base debe existir en catálogo y estar activo
+6. Cantidades de herrajes mayores o iguales a 0
+
+REFERENCIAS Y POPULATE:
+
+1. empleadoAsignado hace populate a Usuario
+2. materialBaseRef hace populate a CatalogoMaterial
+3. herrajes.herrajeId hace populate a CatalogoHerraje
+4. cotizacionId hace populate a Cotizacion
+5. clienteRef hace populate a Cliente
+
+HISTORIAL DE ESTADOS:
+
+1. Siempre agregar entrada al historial cuando cambia el estado
+2. Incluir fecha actual, estado nuevo, usuario que hace el cambio
+3. Notas opcionales pero útiles para tracking
+4. No eliminar entradas anteriores del historial
+
+
+================================================================================
+PARTE 12: VALORES EXACTOS DEL FRONTEND QUE DEBE COINCIDIR EL BACKEND
+================================================================================
+
+ESCENARIOS DE LEVANTAMIENTO:
+- ID "esencial" con título "GAMA ESENCIAL" y multiplicador 0.9
+- ID "tendencia" con título "GAMA TENDENCIA" y multiplicador 1.1
+- ID "premium" con título "GAMA PREMIUM" y multiplicador 1.35
+
+ESCENARIOS DE COTIZACIÓN:
+- ID "esencial" con título "GAMA ESENCIAL" y multiplicador 0.92
+- ID "tendencia" con título "GAMA TENDENCIA" y multiplicador 1.05
+- ID "premium" con título "GAMA PREMIUM" y multiplicador 1.18
+
+MATERIALES BASE:
+- ID "melamina", nombre "Melamina", precio 6500 MXN/metro
+- ID "mdf", nombre "MDF", precio 7800 MXN/metro
+- ID "tech", nombre "Tech", precio 9800 MXN/metro
+
+COLORES/TEXTURAS:
+- "Blanco Nieve"
+- "Nogal Calido" (sin tilde en Calido)
+- "Gris Grafito"
+- "Fresno Arena"
+
+HERRAJES:
+- ID "correderas", nombre "Correderas cierre suave", precio 500 MXN
+- ID "bisagras", nombre "Bisagras 110° reforzadas", precio 140 MXN
+- ID "jaladeras", nombre "Jaladeras minimalistas", precio 90 MXN
+- ID "bote", nombre "Bote de basura extraíble", precio 1200 MXN
+- ID "iluminacion", nombre "Iluminación LED interior", precio 780 MXN
+
+TIPOS DE PROYECTO:
+- "Cocina"
+- "Closet"
+- "vestidor" (con minúscula inicial)
+- "Mueble para el baño"
+
+TIPOS DE CUBIERTA:
+- "Granito Básico" (con tilde en Básico)
+- "Cuarzo"
+- "Piedra Sinterizada"
+
+GROSORES DE TABLERO:
+- "16" (como string, equivale a 16mm, factor 1.0)
+- "19" (como string, equivale a 19mm, factor 1.08)
+
+ESTADOS DE LEVANTAMIENTO:
+- "pendiente" (inicial)
+- "en_revision" (cuando se asigna empleado)
+- "contactado" (cuando se contacta al cliente)
+- "cotizado" (cuando se convierte en cotización)
+- "rechazado" (cuando cliente rechaza)
+- "archivado" (cuando se archiva)
+
+ESTADOS DE COTIZACIÓN:
+- "borrador" (inicial)
+- "enviada" (cuando se envía a cliente)
+- "aprobada" (cuando cliente aprueba)
+- "en_produccion" (cuando entra al taller)
+- "lista_instalacion" (cuando está lista para instalar)
+- "instalada" (cuando se completa la instalación)
+- "rechazada" (cuando se rechaza)
+- "archivada" (cuando se archiva)
+
+
+================================================================================
+PARTE 13: INTEGRACIÓN CON EL FRONTEND
+================================================================================
+
+ENDPOINTS QUE EL FRONTEND LLAMARÁ:
+
+PARA MÓDULO LEVANTAMIENTO:
+- POST /api/levantamientos (crear levantamiento con los 5 pasos)
+- GET /api/levantamientos (listar todos con filtros)
+- GET /api/levantamientos/:id (obtener uno específico)
+- PATCH /api/levantamientos/:id/estado (cambiar estado)
+- PATCH /api/levantamientos/:id/asignar (asignar empleado)
+
+PARA MÓDULO COTIZADOR:
+- POST /api/cotizaciones (crear cotización completa)
+- POST /api/cotizaciones/borrador (guardar como borrador)
+- GET /api/cotizaciones (listar todas con filtros)
+- GET /api/cotizaciones/:id (obtener una específica)
+- PATCH /api/cotizaciones/:id (actualizar cotización)
+- PATCH /api/cotizaciones/:id/estado (cambiar estado)
+
+PARA CATÁLOGOS (poblar dropdowns):
+- GET /api/catalogos/materiales
+- GET /api/catalogos/herrajes
+- GET /api/catalogos/colores
+- GET /api/catalogos/tipos-proyecto
+- GET /api/catalogos/tipos-cubierta
+
+PARA EMPLEADOS (dropdown de asignación):
+- GET /api/empleados (o /api/usuarios)
+
+HEADERS QUE EL FRONTEND ENVIARÁ:
+- Content-Type: application/json
+- Accept: application/json
+
+EL FRONTEND ESPERA SIEMPRE:
+- Respuestas en formato JSON
+- Estructura { success, data, message } consistente
+- Status codes apropiados (200, 201, 400, 404, 500)
+
+
+================================================================================
+PARTE 14: NOTAS FINALES IMPORTANTES
+================================================================================
+
+1. PDFs NO SE GENERAN EN EL BACKEND
+   - El frontend tiene botones para generar PDFs pero lo hace localmente
+   - El backend solo guarda y retorna datos
+   - No implementar endpoints para generación de PDFs
+
+2. PRECIOS SON CONFIGURABLES
+   - Todos los precios vienen de las colecciones CatalogoMaterial y CatalogoHerraje
+   - Nunca hardcodear precios en controllers
+   - Siempre buscar en catálogo antes de crear cotización
+
+3. LEVANTAMIENTOS Y COTIZACIONES SON INDEPENDIENTES
+   - No hay conversión automática por ahora
+   - Endpoint convertirACotizacion retorna 501 (no implementado)
+   - Esto se puede agregar después si se requiere
+
+4. SISTEMA DE ESTADOS CON HISTORIAL
+   - Cada cambio de estado debe quedar registrado en historialEstados
+   - Nunca sobrescribir el historial, siempre hacer push
+   - Incluir fecha, usuario y estado nuevo en cada entrada
+
+5. CORS DEBE ESTAR HABILITADO
+   - Frontend corre en puerto diferente (probablemente 3000)
+   - Backend corre en puerto 3001
+   - Sin CORS las peticiones serán bloqueadas
+
+6. MANEJO DE ERRORES CONSISTENTE
+   - Siempre usar try-catch en métodos async
+   - Siempre hacer console.error del error completo
+   - Retornar formato consistente con success: false
+
+7. VALIDACIONES SON CRÍTICAS
+   - Validar todos los inputs antes de guardar
+   - Retornar mensajes de error descriptivos
+   - Usar status 400 para errores de validación
+
+8. MULTIPLICADORES Y FACTORES EXACTOS
+   - Los valores de los multiplicadores son MUY ESPECÍFICOS
+   - No redondear ni aproximar estos valores
+   - Deben coincidir exactamente con los del frontend
+
+9. POBLAR (POPULATE) REFERENCIAS
+   - Usar populate en GETs para retornar datos relacionados
+   - No poblar en POST/PATCH, solo retornar IDs
+   - Seleccionar solo campos necesarios en populate
+
+10. SEED LIMPIA Y RECREA DATOS
+    - El script de seed ELIMINA todo antes de insertar
+    - Solo ejecutar en desarrollo, nunca en producción
+    - Útil para testing y desarrollo inicial
+
+
+================================================================================
+FIN DEL DOCUMENTO - PROMPT COMPLETO PARA BACKEND KÜCHE
+================================================================================
+
+Con toda esta información, el agente de IA del backend debe ser capaz de:
+1. Crear todos los modelos de Mongoose correctamente
+2. Implementar todos los controladores con la lógica completa
+3. Definir todas las rutas necesarias
+4. Configurar el servidor Express con middlewares
+5. Crear el script de seed con datos iniciales
+6. Integrar correctamente con el frontend
+
+IMPORTANTE: Seguir EXACTAMENTE las especificaciones de cálculos, enums, y valores para garantizar compatibilidad total con el frontend.

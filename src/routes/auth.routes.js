@@ -1,5 +1,19 @@
 import { Router } from "express";
-import { login, register, perfil, verifyToken, getUsers, getUser, deleteUser, logout, subirUser } from "../controllers/auth.controller.js";
+import { 
+    login, 
+    register, 
+    perfil, 
+    verifyToken, 
+    getUsers, 
+    getUser, 
+    deleteUser, 
+    logout, 
+    subirUser,
+    getCurrentUser,
+    updatePassword,
+    requestPasswordReset,
+    resetPassword
+} from "../controllers/auth.controller.js";
 import { authRequired } from "../middlewares/validateToken.js";
 const router = Router()
 
@@ -29,5 +43,17 @@ router.get('/verify', verifyToken);
 
 // Ruta para obtener perfil del usuario autenticado
 router.get('/perfil', authRequired, perfil);
+
+// Ruta para obtener usuario actual (getCurrentUser)
+router.get('/me', authRequired, getCurrentUser);
+
+// Ruta para actualizar contraseña
+router.put('/update-password', authRequired, updatePassword);
+
+// Ruta para solicitar restablecimiento de contraseña
+router.post('/request-password-reset', requestPasswordReset);
+
+// Ruta para restablecer contraseña con token
+router.post('/reset-password', resetPassword);
 
 export default router;

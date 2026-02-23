@@ -144,23 +144,22 @@ export const obtenerOrdenTrabajo = async (req, res) => {
     }
 };
 
-// Obtener progreso por correo + número de seguimiento (PÚBLICO - cliente sin cuenta)
+// Obtener progreso por número de seguimiento (PÚBLICO - solo se valida el id de la orden)
 export const obtenerProgresoPorCorreo = async (req, res) => {
     try {
-        const { correo, numeroSeguimiento } = req.query;
-        if (!correo?.trim() || !numeroSeguimiento?.trim()) {
-            return res.status(400).json({ message: "Se requieren correo y numeroSeguimiento (query)" });
+        const numeroSeguimiento = req.query.numeroSeguimiento;
+        if (!numeroSeguimiento?.trim()) {
+            return res.status(400).json({ message: "Se requiere numeroSeguimiento (query: ?numeroSeguimiento=...)" });
         }
 
         const orden = await OrdenTrabajo.findOne({
-            numeroSeguimiento: numeroSeguimiento.toString().trim().toUpperCase(),
-            'cliente.correo': correo.toString().trim().toLowerCase()
+            numeroSeguimiento: numeroSeguimiento.toString().trim().toUpperCase()
         })
             .populate('diseno', 'nombre descripcion categoria imagenes')
             .select('-notasInternas');
 
         if (!orden) {
-            return res.status(404).json({ message: "No se encontró el proyecto o el correo no coincide" });
+            return res.status(404).json({ message: "No se encontró el proyecto con ese número de seguimiento" });
         }
 
         const respuesta = {

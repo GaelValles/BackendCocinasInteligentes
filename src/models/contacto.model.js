@@ -1,7 +1,7 @@
 import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
 
-// Primer contacto desde la landing (nombre, teléfono, correo)
+// Primer contacto desde la landing (nombre, teléfono, correo, mensaje opcional)
 const contactoSchema = new mongoose.Schema({
     nombre: {
         type: String,
@@ -18,6 +18,11 @@ const contactoSchema = new mongoose.Schema({
         required: true,
         trim: true,
         lowercase: true
+    },
+    mensaje: {
+        type: String,
+        trim: true,
+        default: ''
     }
 }, {
     timestamps: true

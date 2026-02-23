@@ -13,7 +13,9 @@ import {
     cancelarCita,
     iniciarCita,
     finalizarCita,
-    asignarIngenieroCita
+    asignarIngenieroCita,
+    obtenerCitasIngeniero,
+    actualizarEspecificaciones
 } from "../controllers/citas.controller.js";
 
 const router = Router();
@@ -37,6 +39,9 @@ router.get('/verCitas', authRequired, obtenerCitas);
 // Ruta para ver una cita específica
 router.get('/verCita/:id', authRequired, obtenerCita);
 
+// Ruta para obtener las citas asignadas al ingeniero autenticado
+router.get('/misCitas', authRequired, obtenerCitasIngeniero);
+
 // Asignar ingeniero a una cita (solo admin)
 router.put('/:id/asignarIngeniero', authRequired, asignarIngenieroCita);
 
@@ -51,6 +56,9 @@ router.post('/:id/cancel', authRequired, cancelarCita);
 
 // Ruta para iniciar cita (usado en "Iniciar cita" del diagrama, cambia estado a "en_proceso")
 router.put('/:id/iniciar', authRequired, iniciarCita);
+
+// Ruta para actualizar especificaciones de una cita (solo el ingeniero asignado)
+router.put('/:id/especificaciones', authRequired, actualizarEspecificaciones);
 
 // Ruta para finalizar cita (usado en "Finalizar cita" del diagrama, cambia estado a "completada")
 router.put('/:id/finalizar', authRequired, finalizarCita);
