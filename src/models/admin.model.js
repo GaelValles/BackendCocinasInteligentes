@@ -43,4 +43,8 @@ const usersSchema = new mongoose.Schema({
     timestamps: true
 });
 
-export default connectDBClientes.model('Users', usersSchema);
+const UsersModel = connectDBClientes.models && connectDBClientes.models.Users
+    ? connectDBClientes.model('Users')
+    : connectDBClientes.model('Users', usersSchema);
+
+export default UsersModel;

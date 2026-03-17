@@ -4,19 +4,19 @@ import OrdenTrabajo from '../models/ordenTrabajo.model.js';
 // Registrar un pago (solo admin)
 export const registrarPago = async (req, res) => {
     try {
-        if (req.admin?.rol !== 'admin') {
-            return res.status(403).json({ message: 'Solo el administrador puede registrar pagos' });
+        if (!req.admin || req.admin?.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Solo el administrador puede registrar pagos' });
         }
 
         const { ordenTrabajoId, monto, concepto } = req.body;
 
         if (!ordenTrabajoId || monto == null || monto < 0) {
-            return res.status(400).json({ message: 'ordenTrabajoId y monto (>= 0) son requeridos' });
+            return res.status(400).json({ success: false, message: 'ordenTrabajoId y monto (>= 0) son requeridos' });
         }
 
         const orden = await OrdenTrabajo.findById(ordenTrabajoId);
         if (!orden) {
-            return res.status(404).json({ message: 'Orden de trabajo no encontrada' });
+            return res.status(404).json({ success: false, message: 'Orden de trabajo no encontrada' });
         }
 
         const pago = new Pago({
@@ -29,13 +29,10 @@ export const registrarPago = async (req, res) => {
 
         const pagoConOrden = await Pago.findById(pago._id).populate('ordenTrabajo', 'numeroSeguimiento estado');
 
-        res.status(201).json({
-            message: 'Pago registrado correctamente',
-            pago: pagoConOrden
-        });
+        res.status(201).json({ success: true, message: 'Pago registrado correctamente', data: pagoConOrden });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Error al registrar pago', error: error.message });
+        res.status(500).json({ success: false, message: 'Error al registrar pago', error: error.message });
     }
 };
 
@@ -46,13 +43,13 @@ export const listarPagosPorOrden = async (req, res) => {
 
         const orden = await OrdenTrabajo.findById(ordenId);
         if (!orden) {
-            return res.status(404).json({ message: 'Orden de trabajo no encontrada' });
+            return res.status(404).json({ success: false, message: 'Orden de trabajo no encontrada' });
         }
 
         const esAdmin = req.admin?.rol === 'admin';
         const esIngenieroAsignado = orden.ingenieroAsignado?.toString() === req.admin?.id;
         if (!esAdmin && !esIngenieroAsignado) {
-            return res.status(403).json({ message: 'No tienes permiso para ver los pagos de esta orden' });
+            return res.status(403).json({ success: false, message: 'No tienes permiso para ver los pagos de esta orden' });
         }
 
         const pagos = await Pago.find({ ordenTrabajo: ordenId })
@@ -62,9 +59,9 @@ export const listarPagosPorOrden = async (req, res) => {
 
         const totalPagado = pagos.reduce((sum, p) => sum + p.monto, 0);
 
-        res.json({ pagos, totalPagado });
+        res.status(200).json({ success: true, data: { pagos, totalPagado } });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Error al listar pagos', error: error.message });
+        res.status(500).json({ success: false, message: 'Error al listar pagos', error: error.message });
     }
 };

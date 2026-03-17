@@ -2,6 +2,7 @@ import express from 'express';
 import morgan from 'morgan';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import responseWrapper from './middlewares/responseWrapper.js';
 
 import authRoutes from './routes/auth.routes.js';
 import contactoRoutes from './routes/contacto.routes.js';
@@ -15,6 +16,10 @@ import materialesRoutes from './routes/materiales.routes.js';
 import disenosRoutes from './routes/disenos.routes.js';
 import ordenTrabajoRoutes from './routes/ordenTrabajo.routes.js';
 import pagosRoutes from './routes/pagos.routes.js';
+import tareasRoutes from './routes/tareas.routes.js';
+import proyectosRoutes from './routes/proyectos.routes.js';
+import archivosRoutes from './routes/archivos.routes.js';
+import kanbanRoutes from './routes/kanban.routes.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -24,17 +29,26 @@ const app = express();
 app.use(morgan('dev'));
 app.use(cors({
     origin: ['http://localhost:5173', 'http://localhost:3000'],
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
+    exposedHeaders: ['Content-Length', 'X-Ku%C3%BCche-Trace']
 }));
 app.use(express.json());
 app.use(cookieParser());
+// Normalize JSON responses into the frontend envelope
+app.use(responseWrapper);
+// Serve uploaded files
+import path from 'path';
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Health check
 app.get('/', (req, res) => {
     res.json({
         success: true,
         message: 'Backend Küche API funcionando correctamente',
-        version: '2.0.0',
+        version: '2.1.0',
         endpoints: {
             auth: '/api/auth/login, /api/auth/register, /api/auth/logout, /api/auth/verify, /api/auth/me',
             levantamientos: '/api/levantamientos',
@@ -46,7 +60,10 @@ app.get('/', (req, res) => {
             contacto: '/api/contacto',
             disenos: '/api/disenos',
             ordenes: '/api/ordenes',
-            pagos: '/api/pagos'
+            pagos: '/api/pagos',
+            tareas: '/api/tareas',
+            proyectos: '/api/proyectos',
+            archivos: '/api/archivos'
         }
     });
 });
@@ -65,6 +82,10 @@ app.use('/api/materiales', materialesRoutes);
 app.use('/api/disenos', disenosRoutes);
 app.use('/api/ordenes', ordenTrabajoRoutes);
 app.use('/api/pagos', pagosRoutes);
+app.use('/api/tareas', tareasRoutes);
+app.use('/api/proyectos', proyectosRoutes);
+app.use('/api/archivos', archivosRoutes);
+app.use('/api/kanban', kanbanRoutes);
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
@@ -72,7 +93,10 @@ app.use((err, req, res, next) => {
     res.status(500).json({
         success: false,
         message: 'Algo salió mal!',
-        error: process.env.NODE_ENV === 'development' ? err.message : {}
+        error: {
+            message: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        }
     });
 });
 

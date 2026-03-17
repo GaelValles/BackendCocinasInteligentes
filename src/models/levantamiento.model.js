@@ -173,4 +173,8 @@ levantamientoSchema.pre('save', function(next) {
     next();
 });
 
-export default connectDBClientes.model('Levantamiento', levantamientoSchema);
+const LevantamientoModel = connectDBClientes.models && connectDBClientes.models.Levantamiento
+    ? connectDBClientes.model('Levantamiento')
+    : connectDBClientes.model('Levantamiento', levantamientoSchema);
+
+export default LevantamientoModel;

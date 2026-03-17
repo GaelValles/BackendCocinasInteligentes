@@ -18,4 +18,8 @@ const diasInhabilesSchema = new mongoose.Schema({
 // Índice único para fecha (evita duplicados y mejora búsquedas)
 diasInhabilesSchema.index({ fecha: 1 }, { unique: true });
 
-export default connectDBClientes.model('DiasInhabiles', diasInhabilesSchema);
+const DiasModel = connectDBClientes.models && connectDBClientes.models.DiasInhabiles
+    ? connectDBClientes.model('DiasInhabiles')
+    : connectDBClientes.model('DiasInhabiles', diasInhabilesSchema);
+
+export default DiasModel;

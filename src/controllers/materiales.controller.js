@@ -6,8 +6,8 @@ export const crearMaterial = async (req, res) => {
         const { nombre, descripcion, unidadMedida, precioUnitario, categoria, proveedor } = req.body;
 
         // Verificar que sea admin
-        if (req.admin.rol !== 'admin') {
-            return res.status(403).json({ message: "Solo admin puede crear materiales" });
+        if (!req.admin || req.admin.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: "Solo admin puede crear materiales" });
         }
 
         // Verificar si ya existe un material con ese nombre
@@ -17,8 +17,9 @@ export const crearMaterial = async (req, res) => {
 
         if (materialExistente) {
             return res.status(400).json({ 
+                success: false,
                 message: "Ya existe un material con ese nombre",
-                materialExistente 
+                data: materialExistente 
             });
         }
 
@@ -38,14 +39,11 @@ export const crearMaterial = async (req, res) => {
 
         await material.save();
 
-        res.status(201).json({
-            message: "Material creado exitosamente",
-            material
-        });
+        res.status(201).json({ success: true, message: "Material creado exitosamente", data: material });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al crear material", error: error.message });
+        res.status(500).json({ success: false, message: "Error al crear material", error: error.message });
     }
 };
 
@@ -62,11 +60,11 @@ export const obtenerMateriales = async (req, res) => {
             .select('-historialPrecios') // Ocultar historial en listado general
             .sort({ nombre: 1 });
 
-        res.json(materiales);
+        res.status(200).json({ success: true, data: materiales });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al obtener materiales", error: error.message });
+        res.status(500).json({ success: false, message: "Error al obtener materiales", error: error.message });
     }
 };
 
@@ -79,14 +77,14 @@ export const obtenerMaterial = async (req, res) => {
             .populate('historialPrecios.modificadoPor', 'nombre');
 
         if (!material) {
-            return res.status(404).json({ message: "Material no encontrado" });
+            return res.status(404).json({ success: false, message: "Material no encontrado" });
         }
 
-        res.json(material);
+        res.status(200).json({ success: true, data: material });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al obtener material", error: error.message });
+        res.status(500).json({ success: false, message: "Error al obtener material", error: error.message });
     }
 };
 
@@ -96,7 +94,7 @@ export const buscarMaterialPorNombre = async (req, res) => {
         const { nombre } = req.query;
 
         if (!nombre) {
-            return res.status(400).json({ message: "Nombre es requerido" });
+            return res.status(400).json({ success: false, message: "Nombre es requerido" });
         }
 
         // Búsqueda case-insensitive
@@ -105,16 +103,10 @@ export const buscarMaterialPorNombre = async (req, res) => {
         });
 
         if (!material) {
-            return res.status(404).json({ 
-                message: "Material no encontrado",
-                existe: false 
-            });
+            return res.status(404).json({ success: false, message: "Material no encontrado", data: { existe: false } });
         }
 
-        res.json({
-            existe: true,
-            material
-        });
+        res.status(200).json({ success: true, data: { existe: true, material } });
 
     } catch (error) {
         console.error(error);
@@ -129,13 +121,13 @@ export const actualizarMaterial = async (req, res) => {
         const actualizaciones = req.body;
 
         // Verificar que sea admin
-        if (req.admin.rol !== 'admin') {
-            return res.status(403).json({ message: "Solo admin puede actualizar materiales" });
+        if (!req.admin || req.admin.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: "Solo admin puede actualizar materiales" });
         }
 
         const material = await Materiales.findById(id);
         if (!material) {
-            return res.status(404).json({ message: "Material no encontrado" });
+            return res.status(404).json({ success: false, message: "Material no encontrado" });
         }
 
         // Si se actualiza el precio, usar el método especial
@@ -148,14 +140,11 @@ export const actualizarMaterial = async (req, res) => {
         Object.assign(material, actualizaciones);
         await material.save();
 
-        res.json({
-            message: "Material actualizado exitosamente",
-            material
-        });
+        res.status(200).json({ success: true, message: "Material actualizado exitosamente", data: material });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al actualizar material", error: error.message });
+        res.status(500).json({ success: false, message: "Error al actualizar material", error: error.message });
     }
 };
 
@@ -166,8 +155,8 @@ export const actualizarPrecioMaterial = async (req, res) => {
         const { nuevoPrecio } = req.body;
 
         // Verificar que sea admin
-        if (req.admin.rol !== 'admin') {
-            return res.status(403).json({ message: "Solo admin puede actualizar precios" });
+        if (!req.admin || req.admin.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: "Solo admin puede actualizar precios" });
         }
 
         if (!nuevoPrecio || nuevoPrecio < 0) {
@@ -176,15 +165,12 @@ export const actualizarPrecioMaterial = async (req, res) => {
 
         const material = await Materiales.findById(id);
         if (!material) {
-            return res.status(404).json({ message: "Material no encontrado" });
+            return res.status(404).json({ success: false, message: "Material no encontrado" });
         }
 
         await material.actualizarPrecio(nuevoPrecio, req.admin.id);
 
-        res.json({
-            message: "Precio actualizado exitosamente",
-            material
-        });
+        res.status(200).json({ success: true, message: "Precio actualizado exitosamente", data: material });
 
     } catch (error) {
         console.error(error);
@@ -198,19 +184,19 @@ export const eliminarMaterial = async (req, res) => {
         const { id } = req.params;
 
         // Verificar que sea admin
-        if (req.admin.rol !== 'admin') {
-            return res.status(403).json({ message: "Solo admin puede eliminar materiales" });
+        if (!req.admin || req.admin.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: "Solo admin puede eliminar materiales" });
         }
 
         const material = await Materiales.findByIdAndDelete(id);
         if (!material) {
-            return res.status(404).json({ message: "Material no encontrado" });
+            return res.status(404).json({ success: false, message: "Material no encontrado" });
         }
 
-        res.json({ message: "Material eliminado exitosamente" });
+        res.status(200).json({ success: true, message: "Material eliminado exitosamente", data: null });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al eliminar material", error: error.message });
+        res.status(500).json({ success: false, message: "Error al eliminar material", error: error.message });
     }
 };

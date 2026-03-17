@@ -40,4 +40,8 @@ cotizadorConfigSchema.statics.getConfig = async function () {
     return config;
 };
 
-export default connectDBClientes.model('CotizadorConfig', cotizadorConfigSchema);
+const CotizadorConfigModel = connectDBClientes.models && connectDBClientes.models.CotizadorConfig
+    ? connectDBClientes.model('CotizadorConfig')
+    : connectDBClientes.model('CotizadorConfig', cotizadorConfigSchema);
+
+export default CotizadorConfigModel;

@@ -76,9 +76,23 @@ const citasSchema = new mongoose.Schema({
 }, {
     timestamps: true
 });
+// Historial de cambios de estado para auditoría
+citasSchema.add({
+    historialEstados: [{
+        from: { type: String },
+        to: { type: String },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'Users' },
+        at: { type: Date, default: Date.now },
+        nota: { type: String }
+    }]
+});
 
 // Índices para búsquedas eficientes
 citasSchema.index({ correoCliente: 1, fechaAgendada: 1 });
 citasSchema.index({ estado: 1, fechaAgendada: 1 });
 
-export default connectDBClientes.model('Citas', citasSchema);
+const CitasModel = connectDBClientes.models && connectDBClientes.models.Citas
+    ? connectDBClientes.model('Citas')
+    : connectDBClientes.model('Citas', citasSchema);
+
+export default CitasModel;

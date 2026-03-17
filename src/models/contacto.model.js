@@ -30,4 +30,8 @@ const contactoSchema = new mongoose.Schema({
 
 contactoSchema.index({ correo: 1, createdAt: -1 });
 
-export default connectDBClientes.model('Contacto', contactoSchema);
+const ContactoModel = connectDBClientes.models && connectDBClientes.models.Contacto
+    ? connectDBClientes.model('Contacto')
+    : connectDBClientes.model('Contacto', contactoSchema);
+
+export default ContactoModel;

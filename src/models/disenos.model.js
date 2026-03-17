@@ -121,4 +121,8 @@ disenosSchema.pre('save', function(next) {
     next();
 });
 
-export default connectDBClientes.model('Disenos', disenosSchema);
+const DisenosModel = connectDBClientes.models && connectDBClientes.models.Disenos
+    ? connectDBClientes.model('Disenos')
+    : connectDBClientes.model('Disenos', disenosSchema);
+
+export default DisenosModel;

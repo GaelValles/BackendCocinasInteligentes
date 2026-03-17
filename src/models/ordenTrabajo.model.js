@@ -204,4 +204,8 @@ ordenTrabajoSchema.pre('save', function(next) {
     next();
 });
 
-export default connectDBClientes.model('OrdenTrabajo', ordenTrabajoSchema);
+const OrdenTrabajoModel = connectDBClientes.models && connectDBClientes.models.OrdenTrabajo
+    ? connectDBClientes.model('OrdenTrabajo')
+    : connectDBClientes.model('OrdenTrabajo', ordenTrabajoSchema);
+
+export default OrdenTrabajoModel;

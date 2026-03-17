@@ -10,19 +10,22 @@ export const obtenerMateriales = async (req, res) => {
         const materiales = await Materiales.find({ 
             disponible: true,
             idCotizador: { $in: ['melamina', 'mdf', 'tech'] }
-        }).select('idCotizador nombre precioPorMetro precioUnitario descripcion categoria');
+        }).select('idCotizador nombre precioPorMetro precioUnitario descripcion disponible');
 
-        res.status(200).json({
-            success: true,
-            data: materiales
-        });
+        // Mapear a la estructura que espera el frontend
+        const mapped = materiales.map(m => ({
+            _id: m._id,
+            id: m.idCotizador || String(m._id),
+            nombre: m.nombre,
+            precioMetroLineal: m.precioPorMetro || null,
+            descripcion: m.descripcion || '',
+            activo: !!m.disponible
+        }));
+
+        res.status(200).json({ success: true, data: mapped });
     } catch (error) {
         console.error('Error al obtener materiales:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error al obtener materiales',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error al obtener materiales', error: error.message });
     }
 };
 
@@ -34,19 +37,22 @@ export const obtenerHerrajes = async (req, res) => {
         const herrajes = await Materiales.find({ 
             disponible: true,
             idCotizador: { $in: ['correderas', 'bisagras', 'jaladeras', 'bote', 'iluminacion'] }
-        }).select('idCotizador nombre precioUnitario descripcion categoria');
+        }).select('idCotizador nombre precioUnitario descripcion categoria disponible');
 
-        res.status(200).json({
-            success: true,
-            data: herrajes
-        });
+        const mapped = herrajes.map(h => ({
+            _id: h._id,
+            id: h.idCotizador || String(h._id),
+            nombre: h.nombre,
+            precioUnitario: h.precioUnitario || null,
+            descripcion: h.descripcion || '',
+            categoria: h.categoria || '',
+            activo: !!h.disponible
+        }));
+
+        res.status(200).json({ success: true, data: mapped });
     } catch (error) {
         console.error('Error al obtener herrajes:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Error al obtener herrajes',
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error al obtener herrajes', error: error.message });
     }
 };
 

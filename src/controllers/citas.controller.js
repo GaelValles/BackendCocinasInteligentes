@@ -18,11 +18,17 @@ export const crearCita = async (req, res) => {
       informacionAdicional
     } = req.body;
 
+        // Verificar token de captcha en headers (frontend envía en headers)
+        const captchaHeader = req.headers['captcha-token'] || req.headers['captchatoken'] || req.headers['x-captcha-token'];
+        if (!captchaHeader) {
+            return res.status(400).json({ success: false, message: "reCAPTCHA (captcha-token) es requerido en headers" });
+        }
+
     // Validaciones básicas
-    if (!fechaAgendada) return res.status(400).json({ message: "Fecha agendada es requerida" });
-    if (!nombreCliente) return res.status(400).json({ message: "Nombre del cliente es requerido" });
-    if (!correoCliente) return res.status(400).json({ message: "Correo del cliente es requerido" });
-    if (!telefonoCliente) return res.status(400).json({ message: "Teléfono del cliente es requerido" });
+        if (!fechaAgendada) return res.status(400).json({ success: false, message: "Fecha agendada es requerida" });
+        if (!nombreCliente) return res.status(400).json({ success: false, message: "Nombre del cliente es requerido" });
+        if (!correoCliente) return res.status(400).json({ success: false, message: "Correo del cliente es requerido" });
+        if (!telefonoCliente) return res.status(400).json({ success: false, message: "Teléfono del cliente es requerido" });
 
     // Parse y validación de fecha
     let fechaObj;
@@ -35,11 +41,15 @@ export const crearCita = async (req, res) => {
       return res.status(400).json({ message: "Fecha agendada inválida" });
     }
 
-    // Verificar que la fecha sea futura
-    const ahora = new Date();
-    if (fechaObj <= ahora) {
-      return res.status(400).json({ message: "La fecha agendada debe ser posterior a la fecha actual" });
-    }
+        // Verificar que la fecha sea futura y cumpla con mínimo 1 hora de anticipación
+        const ahora = new Date();
+        // Convertir ahora a hora de México para comparación de anticipación
+        const ahoraMexico = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+        const diferenciaMs = fechaObj.getTime() - ahoraMexico.getTime();
+        const unaHoraMs = 60 * 60 * 1000;
+        if (diferenciaMs < unaHoraMs) {
+            return res.status(400).json({ success: false, message: "La cita debe solicitarse con al menos 1 hora de anticipación" });
+        }
 
     // Convertir a hora de México (America/Mexico_City) para validaciones
     const fechaMexico = new Date(fechaObj.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
@@ -71,34 +81,32 @@ export const crearCita = async (req, res) => {
       });
     }
 
-    // VALIDACIÓN: Verificar disponibilidad (2 horas de separación entre citas)
-    const dosHorasAntes = new Date(fechaObj.getTime() - (2 * 60 * 60 * 1000));
-    const dosHorasDespues = new Date(fechaObj.getTime() + (2 * 60 * 60 * 1000));
-    
-    const citasConflicto = await Citas.find({
-      fechaAgendada: {
-        $gte: dosHorasAntes,
-        $lte: dosHorasDespues
-      },
-      estado: { $in: ['programada', 'en_proceso'] } // Solo considerar citas activas
-    });
+        // VALIDACIÓN: Verificar disponibilidad (buffer de 1 hora antes y después)
+        const unaHoraAntes = new Date(fechaObj.getTime() - unaHoraMs);
+        const unaHoraDespues = new Date(fechaObj.getTime() + unaHoraMs);
 
-    if (citasConflicto.length > 0) {
-      const horasCita = citasConflicto.map(c => {
-        const fecha = new Date(c.fechaAgendada);
-        return fecha.toLocaleString('es-MX', { 
-          timeZone: 'America/Mexico_City',
-          hour: '2-digit', 
-          minute: '2-digit',
-          hour12: true 
+        const citasConflicto = await Citas.find({
+            fechaAgendada: {
+                $gte: unaHoraAntes,
+                $lte: unaHoraDespues
+            },
+            estado: { $in: ['programada', 'en_proceso'] }
         });
-      });
-      
-      return res.status(400).json({ 
-        message: "Ya existe una cita programada en ese horario. Debe haber al menos 2 horas de separación entre citas.",
-        citasOcupadas: horasCita
-      });
-    }
+
+        if (citasConflicto.length > 0) {
+            const horasCita = citasConflicto.map(c => {
+                const fecha = new Date(c.fechaAgendada);
+                const horas = String(fecha.getHours()).padStart(2, '0');
+                const minutos = String(fecha.getMinutes()).padStart(2, '0');
+                return `${horas}:${minutos}`;
+            });
+
+            return res.status(400).json({ 
+                success: false,
+                message: "Ya existe una cita programada en ese horario. Debe haber al menos 1 hora de separación entre citas.",
+                citasOcupadas: horasCita
+            });
+        }
 
     // Validar ObjectId del diseño si se proporciona
     if (diseno && !mongoose.Types.ObjectId.isValid(diseno)) {
@@ -126,14 +134,15 @@ export const crearCita = async (req, res) => {
         .populate('diseno', 'nombre descripcion imagenes');
     }
 
-    return res.status(201).json({
-      message: "Cita creada exitosamente",
-      cita: citaCompleta
-    });
-  } catch (error) {
-    console.error('Error en crearCita:', error);
-    return res.status(500).json({ message: "Error al crear la cita", error: error.message });
-  }
+        return res.status(201).json({
+            success: true,
+            data: citaCompleta,
+            message: "Cita creada exitosamente"
+        });
+    } catch (error) {
+        console.error('Error en crearCita:', error);
+        return res.status(500).json({ success: false, message: 'Error al crear la cita', error: error.message });
+    }
 };
 
 // Asignar ingeniero a una cita (solo admin)
@@ -212,17 +221,14 @@ export const asignarIngenieroCita = async (req, res) => {
       await cita.save();
     }
 
-    // Obtener la cita actualizada con el ingeniero poblado
-    const citaPopulated = await Citas.findById(id)
-      .populate('ingenieroAsignado', 'nombre correo telefono rol');
+        // Obtener la cita actualizada con el ingeniero poblado
+        const citaPopulated = await Citas.findById(id)
+            .populate('ingenieroAsignado', 'nombre correo telefono rol');
 
-    return res.json({
-      message: ingenieroId ? "Ingeniero asignado correctamente" : "Asignación de ingeniero removida",
-      cita: citaPopulated
-    });
+        return res.json({ success: true, data: { message: ingenieroId ? 'Trabajador asignado correctamente' : 'Asignación de ingeniero removida', cita: citaPopulated } });
   } catch (error) {
-    console.error('Error en asignarIngenieroCita:', error);
-    return res.status(500).json({ message: "Error al asignar ingeniero", error: error.message });
+        console.error('Error en asignarIngenieroCita:', error);
+        return res.status(500).json({ success: false, message: 'Error al asignar ingeniero', error: error.message });
   }
 };
 
@@ -241,13 +247,19 @@ export const cancelarCita = async (req, res) => {
     cita.estado = 'cancelada';
     await cita.save();
 
-    return res.status(200).json({
-      message: "Cita cancelada exitosamente",
-      cita
-    });
+    // Push history
+    try {
+        cita.historialEstados = cita.historialEstados || [];
+        cita.historialEstados.push({ from: cita.estado, to: 'cancelada', by: req.admin?._id || null, at: new Date(), nota: 'Cancelada' });
+        await cita.save();
+    } catch (e) {
+        console.error('Error al push historial en cancelarCita', e);
+    }
+
+    return res.status(200).json({ success: true, data: { message: 'Cita cancelada exitosamente', cita } });
   } catch (error) {
-    console.error('Error en cancelarCita:', error);
-    return res.status(500).json({ message: "Error al cancelar la cita", error: error.message });
+        console.error('Error en cancelarCita:', error);
+        return res.status(500).json({ success: false, message: 'Error al cancelar la cita', error: error.message });
   }
 };
 
@@ -268,28 +280,10 @@ export const obtenerCitasPorCliente = async (req, res) => {
         .sort({ fechaAgendada: -1 })
         .lean();
 
-        res.json(citas);
+        res.json({ success: true, data: citas });
     } catch (error) {
         console.error('Error en obtenerCitasPorCliente:', error);
-        res.status(500).json({ 
-            message: "Error al obtener las citas", 
-            error: error.message 
-        });
-    }
-};
-
-export const obtenerCitasPorCarro = async (req, res) => {
-    try {
-        // Esta función ya no aplica al nuevo modelo
-        return res.status(400).json({ 
-            message: "Función obsoleta: las citas ya no están asociadas a carros" 
-        });
-    } catch (error) {
-        console.error('Error en obtenerCitasPorCarro:', error);
-        return res.status(500).json({
-            message: "Error en la operación",
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: 'Error al obtener las citas', error: error.message });
     }
 };
 
@@ -299,7 +293,7 @@ export const actualizarCita = async (req, res) => {
         const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, informacionAdicional, estado, diseno, ingenieroAsignado } = req.body;
 
         const cita = await Citas.findById(id);
-        if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
+        if (!cita) return res.status(404).json({ success: false, message: 'Cita no encontrada' });
 
         // Construir objeto de actualización
         const updateData = {};
@@ -315,19 +309,27 @@ export const actualizarCita = async (req, res) => {
         if (diseno !== undefined) updateData.diseno = diseno;
         if (ingenieroAsignado !== undefined) updateData.ingenieroAsignado = ingenieroAsignado || null;
 
-        const citaActualizada = await Citas.findByIdAndUpdate(
-            id,
-            updateData,
-            { new: true, runValidators: true }
-        ).populate({
-            path: 'diseno',
-            select: 'nombre descripcion imagenes'
+        // Determine if estado will change for history
+        const previoEstado = cita.estado;
+
+        // Apply updates directly to the document
+        Object.keys(updateData).forEach(key => {
+            cita[key] = updateData[key];
         });
 
-        res.json(citaActualizada);
+        // If estado changed, push to historialEstados
+        if (updateData.estado && updateData.estado !== previoEstado) {
+            cita.historialEstados = cita.historialEstados || [];
+            cita.historialEstados.push({ from: previoEstado, to: updateData.estado, by: req.admin?._id || null, at: new Date(), nota: 'Actualización manual' });
+        }
+
+        await cita.save();
+        await cita.populate({ path: 'diseno', select: 'nombre descripcion imagenes' });
+
+        res.json({ success: true, data: cita });
     } catch (error) {
         console.error('Error en actualizarCita:', error);
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: 'Error al actualizar cita', error: error.message });
     }
 };
 
@@ -340,10 +342,10 @@ export const eliminarCita = async (req, res) => {
 
         await Citas.findByIdAndDelete(id);
 
-        res.json({ message: "Cita eliminada correctamente" });
+        res.json({ success: true, data: { message: 'Cita eliminada correctamente' } });
     } catch (error) {
         console.error('Error en eliminarCita:', error);
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: 'Error al eliminar cita', error: error.message });
     }
 };
 
@@ -354,13 +356,13 @@ export const obtenerCitas = async (req, res) => {
                 path: 'diseno',
                 select: 'nombre descripcion imagenes'
             })
+            .populate('ingenieroAsignado', 'nombre correo telefono rol')
             .sort({ fechaAgendada: -1 })
             .lean();
-        
-        res.json(citas);
+        res.json({ success: true, data: citas });
     } catch (error) {
         console.error('Error en obtenerCitas:', error);
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener citas', error: error.message });
     }
 };
 
@@ -374,95 +376,43 @@ export const obtenerCita = async (req, res) => {
             })
             .populate('ingenieroAsignado', 'nombre correo telefono rol');
         
-        if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
+        if (!cita) return res.status(404).json({ success: false, message: 'Cita no encontrada' });
         
         // Si es ingeniero o arquitecto, solo puede ver sus citas asignadas
         if (req.admin && (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto')) {
             if (!cita.ingenieroAsignado || cita.ingenieroAsignado._id.toString() !== req.admin.id.toString()) {
-                return res.status(403).json({ message: "No tienes permiso para ver esta cita" });
+                return res.status(403).json({ success: false, message: 'No tienes permiso para ver esta cita' });
             }
         }
         
-        res.json(cita);
+        res.json({ success: true, data: cita });
     } catch (error) {
         console.error('Error en obtenerCita:', error);
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener cita', error: error.message });
     }
 };
 
-export const getAllCitas = async (req, res) => {
-    try {
-        const citas = await Citas.find()
-            .populate({
-                path: 'diseno',
-                select: 'nombre descripcion imagenes'
-            })
-            .sort({ fechaAgendada: -1 })
-            .lean();
-
-        res.json(citas);
-    } catch (error) {
-        console.error('Error en getAllCitas:', error);
-        res.status(500).json({ 
-            message: "Error al obtener todas las citas", 
-            error: error.message 
-        });
-    }
-};
+export const getAllCitas = obtenerCitas;
 
 export const updateCitaEstado = async (req, res) => {
     try {
-        const { id } = req.params;
         const { estado } = req.body;
-
-        // Validar que el estado sea válido
         const estadosValidos = ['programada', 'en_proceso', 'completada', 'cancelada'];
         if (!estadosValidos.includes(estado)) {
-            return res.status(400).json({ 
-                message: "Estado no válido" 
-            });
+            return res.status(400).json({ success: false, message: 'Estado no válido' });
         }
 
-        const updateData = { estado };
-
-        // Si el estado es 'completada', agregar fechaTermino
+        // Delegate to actualizarCita to ensure single update path
+        // If completing, set fechaTermino when not provided
         if (estado === 'completada' && !req.body.fechaTermino) {
-            updateData.fechaTermino = new Date();
+            req.body.fechaTermino = new Date();
         }
 
-        // Si el estado es 'en_proceso', agregar fechaInicio si no existe
-        if (estado === 'en_proceso') {
-            const cita = await Citas.findById(id);
-            if (cita && !cita.fechaInicio) {
-                updateData.fechaInicio = new Date();
-            }
-        }
-
-        const citaActualizada = await Citas.findByIdAndUpdate(
-            id,
-            updateData,
-            { 
-                new: true,
-                runValidators: true
-            }
-        ).populate({
-            path: 'diseno',
-            select: 'nombre descripcion imagenes'
-        });
-
-        if (!citaActualizada) {
-            return res.status(404).json({ 
-                message: "Cita no encontrada" 
-            });
-        }
-
-        res.json(citaActualizada);
+        // actualizarCita expects req.params.id and req.body; call it directly
+        return await actualizarCita(req, res);
     } catch (error) {
         console.error('Error en updateCitaEstado:', error);
-        res.status(500).json({ 
-            message: "Error al actualizar el estado de la cita", 
-            error: error.message 
-        });
+        return res.status(500).json({ success: false, message: 'Error al actualizar el estado de la cita', error: error.message });
     }
 };
 
@@ -479,7 +429,7 @@ export const iniciarCita = async (req, res) => {
 
         const cita = await Citas.findById(id);
         if (!cita) {
-            return res.status(404).json({ message: "Cita no encontrada" });
+            return res.status(404).json({ success: false, message: 'Cita no encontrada' });
         }
 
         // Si es ingeniero o arquitecto, solo puede iniciar sus citas asignadas
@@ -490,8 +440,10 @@ export const iniciarCita = async (req, res) => {
         }
 
         if (cita.estado !== 'programada') {
-            return res.status(400).json({ message: "La cita no está en estado programada" });
+            return res.status(400).json({ success: false, message: 'La cita no está en estado programada' });
         }
+
+        const previoEstado = cita.estado;
 
         cita.estado = 'en_proceso';
         cita.fechaInicio = new Date();
@@ -499,6 +451,14 @@ export const iniciarCita = async (req, res) => {
         if (estilo !== undefined) cita.especificacionesInicio.estilo = estilo;
         if (especificaciones !== undefined) cita.especificacionesInicio.especificaciones = especificaciones;
         if (materialesPreferidos !== undefined) cita.especificacionesInicio.materialesPreferidos = materialesPreferidos;
+        // Push history
+        try {
+            cita.historialEstados = cita.historialEstados || [];
+            cita.historialEstados.push({ from: previoEstado, to: 'en_proceso', by: req.admin?._id || null, at: new Date(), nota: 'Inicio de trabajo' });
+        } catch (e) {
+            console.error('Error al preparar historial en iniciarCita', e);
+        }
+
         await cita.save();
 
         // Poblar diseño e ingeniero para respuesta
@@ -507,14 +467,11 @@ export const iniciarCita = async (req, res) => {
             { path: 'ingenieroAsignado', select: 'nombre correo telefono rol' }
         ]);
 
-        res.json({
-            message: "Cita iniciada exitosamente",
-            cita
-        });
+        res.json({ success: true, data: { message: 'Cita iniciada exitosamente', cita } });
 
     } catch (error) {
         console.error('Error en iniciarCita:', error);
-        res.status(500).json({ message: "Error al iniciar cita", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al iniciar cita', error: error.message });
     }
 };
 
@@ -531,7 +488,7 @@ export const finalizarCita = async (req, res) => {
 
         const cita = await Citas.findById(id).populate('diseno');
         if (!cita) {
-            return res.status(404).json({ message: "Cita no encontrada" });
+            return res.status(404).json({ success: false, message: 'Cita no encontrada' });
         }
 
         // Si es ingeniero o arquitecto, solo puede finalizar sus citas asignadas
@@ -542,12 +499,21 @@ export const finalizarCita = async (req, res) => {
         }
 
         if (cita.estado === 'completada') {
-            return res.status(400).json({ message: "La cita ya está completada" });
+            return res.status(400).json({ success: false, message: 'La cita ya está completada' });
         }
+
+        const previoEstado = cita.estado;
 
         // Actualizar cita
         cita.estado = 'completada';
         cita.fechaTermino = new Date();
+        try {
+            cita.historialEstados = cita.historialEstados || [];
+            cita.historialEstados.push({ from: previoEstado, to: 'completada', by: req.admin?._id || null, at: new Date(), nota: 'Finalización de cita' });
+        } catch (e) {
+            console.error('Error al preparar historial en finalizarCita', e);
+        }
+
         await cita.save();
 
         // Generar número de seguimiento único
@@ -608,19 +574,11 @@ export const finalizarCita = async (req, res) => {
             });
         }
 
-        res.status(201).json({
-            message: "Cita finalizada y orden de trabajo creada exitosamente",
-            cita,
-            ordenTrabajo: {
-                _id: ordenTrabajo._id,
-                numeroSeguimiento,
-                estado: estadoInicial
-            }
-        });
+        res.status(201).json({ success: true, data: { message: 'Cita finalizada y orden de trabajo creada exitosamente', cita, ordenTrabajo: { _id: ordenTrabajo._id, numeroSeguimiento, estado: estadoInicial } } });
 
     } catch (error) {
         console.error('Error en finalizarCita:', error);
-        res.status(500).json({ message: "Error al finalizar cita", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al finalizar cita', error: error.message });
     }
 };
 
@@ -642,14 +600,10 @@ export const obtenerCitasIngeniero = async (req, res) => {
             .sort({ fechaAgendada: -1 })
             .lean();
 
-        res.json({
-            message: `Citas asignadas a ${req.admin.nombre || 'ti'}`,
-            total: citas.length,
-            citas
-        });
+        res.json({ success: true, data: { message: `Citas asignadas a ${req.admin.nombre || 'ti'}`, total: citas.length, citas } });
     } catch (error) {
         console.error('Error en obtenerCitasIngeniero:', error);
-        res.status(500).json({ message: "Error al obtener las citas", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener las citas', error: error.message });
     }
 };
 
@@ -693,13 +647,54 @@ export const actualizarEspecificaciones = async (req, res) => {
             { path: 'ingenieroAsignado', select: 'nombre correo telefono rol' }
         ]);
 
-        res.json({
-            message: "Especificaciones actualizadas exitosamente",
-            cita
-        });
+        res.json({ success: true, data: { message: 'Especificaciones actualizadas exitosamente', cita } });
 
     } catch (error) {
         console.error('Error en actualizarEspecificaciones:', error);
-        res.status(500).json({ message: "Error al actualizar especificaciones", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al actualizar especificaciones', error: error.message });
+    }
+};
+
+// Obtener disponibilidad de horarios (ruta pública)
+export const obtenerDisponibilidad = async (req, res) => {
+    try {
+        const { fecha } = req.query;
+
+        if (!fecha) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Fecha requerida" 
+            });
+        }
+
+        // Parsear la fecha solicitada (formato: YYYY-MM-DD)
+        // Agregar la hora de México para buscar correctamente
+        const fechaInicio = new Date(fecha + 'T00:00:00');
+        const fechaFin = new Date(fecha + 'T23:59:59.999');
+
+        const citas = await Citas.find({
+            fechaAgendada: { $gte: fechaInicio, $lte: fechaFin },
+            estado: { $in: ['programada', 'en_proceso'] }
+        });
+
+        const horariosOcupados = citas.map(cita => {
+            const fecha = new Date(cita.fechaAgendada);
+            const horas = String(fecha.getHours()).padStart(2, '0');
+            const minutos = String(fecha.getMinutes()).padStart(2, '0');
+            return `${horas}:${minutos}`;
+        });
+
+        return res.status(200).json({
+            success: true,
+            fecha: fecha,
+            horariosOcupados: horariosOcupados
+        });
+
+    } catch (error) {
+        console.error('Error en obtenerDisponibilidad:', error);
+        return res.status(500).json({ 
+            success: false, 
+            message: "Error al consultar disponibilidad"
+        });
     }
 };

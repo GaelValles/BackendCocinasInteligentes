@@ -119,4 +119,8 @@ materialesSchema.methods.actualizarPrecio = function(nuevoPrecio, usuarioId) {
     return this.save();
 };
 
-export default connectDBClientes.model('Materiales', materialesSchema);
+const MaterialesModel = connectDBClientes.models && connectDBClientes.models.Materiales
+    ? connectDBClientes.model('Materiales')
+    : connectDBClientes.model('Materiales', materialesSchema);
+
+export default MaterialesModel;

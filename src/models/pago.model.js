@@ -32,4 +32,8 @@ const pagoSchema = new mongoose.Schema({
 
 pagoSchema.index({ ordenTrabajo: 1, fecha: -1 });
 
-export default connectDBClientes.model('Pago', pagoSchema);
+const PagoModel = connectDBClientes.models && connectDBClientes.models.Pago
+    ? connectDBClientes.model('Pago')
+    : connectDBClientes.model('Pago', pagoSchema);
+
+export default PagoModel;

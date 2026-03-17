@@ -7,7 +7,6 @@ import {
     obtenerCitas,
     obtenerCita,
     obtenerCitasPorCliente,
-    obtenerCitasPorCarro,
     getAllCitas,
     updateCitaEstado,
     cancelarCita,
@@ -15,7 +14,8 @@ import {
     finalizarCita,
     asignarIngenieroCita,
     obtenerCitasIngeniero,
-    actualizarEspecificaciones
+    actualizarEspecificaciones,
+    obtenerDisponibilidad
 } from "../controllers/citas.controller.js";
 
 const router = Router();
@@ -24,6 +24,9 @@ const router = Router();
 
 // Ruta pública para crear/agendar cita (no requiere cuenta ni autenticación)
 router.post('/agregarCita', crearCita);
+
+// Ruta pública para consultar disponibilidad de horarios
+router.get('/disponibilidad', obtenerDisponibilidad);
 
 // ========== RUTAS AUTENTICADAS ==========
 
@@ -48,8 +51,7 @@ router.put('/:id/asignarIngeniero', authRequired, asignarIngenieroCita);
 // Ruta para obtener citas por correo del cliente (query: ?correo=...)
 router.get('/porCliente', authRequired, obtenerCitasPorCliente);
 
-// Ruta para obtener citas por carro específico
-router.get('/porCarro/:id', authRequired, obtenerCitasPorCarro);
+// Nota: la ruta por carro se removió temporalmente (no existe implementación)
 
 // Ruta para cancelar cita (usado en "Cancelar cita" del diagrama con lógica de penalización)
 router.post('/:id/cancel', authRequired, cancelarCita);

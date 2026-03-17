@@ -225,4 +225,8 @@ cotizacionSchema.pre('save', function(next) {
     next();
 });
 
-export default connectDBClientes.model('Cotizacion', cotizacionSchema);
+const CotizacionModel = connectDBClientes.models && connectDBClientes.models.Cotizacion
+    ? connectDBClientes.model('Cotizacion')
+    : connectDBClientes.model('Cotizacion', cotizacionSchema);
+
+export default CotizacionModel;

@@ -164,4 +164,8 @@ notificacionesSchema.statics.notificarCambioEstadoOrden = async function(ordenTr
     }
 };
 
-export default connectDBClientes.model('Notificaciones', notificacionesSchema);
+const NotificacionesModel = connectDBClientes.models && connectDBClientes.models.Notificaciones
+    ? connectDBClientes.model('Notificaciones')
+    : connectDBClientes.model('Notificaciones', notificacionesSchema);
+
+export default NotificacionesModel;
