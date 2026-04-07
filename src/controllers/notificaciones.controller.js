@@ -3,28 +3,28 @@ import Notificaciones from '../models/notificaciones.model.js';
 // Obtener todas las notificaciones del usuario autenticado
 export const obtenerNotificaciones = async (req, res) => {
     try {
-        const notificaciones = await Notificaciones.find({ destinatario: req.user.id })
+        const notificaciones = await Notificaciones.find({ destinatario: req.user?.id })
             .sort({ createdAt: -1 })
             .limit(50); // Limitar a las últimas 50
 
-        res.json(notificaciones);
+        res.json({ success: true, data: notificaciones });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al obtener notificaciones", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener notificaciones', error: error.message });
     }
 };
 
 // Obtener solo notificaciones no leídas
 export const obtenerNotificacionesNoLeidas = async (req, res) => {
     try {
-        const notificaciones = await Notificaciones.obtenerNoLeidas(req.user.id);
+        const notificaciones = await Notificaciones.obtenerNoLeidas(req.user?.id);
 
-        res.json(notificaciones);
+        res.json({ success: true, data: notificaciones });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al obtener notificaciones no leídas", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener notificaciones no leídas', error: error.message });
     }
 };
 
@@ -32,15 +32,15 @@ export const obtenerNotificacionesNoLeidas = async (req, res) => {
 export const obtenerContadorNoLeidas = async (req, res) => {
     try {
         const contador = await Notificaciones.countDocuments({
-            destinatario: req.user.id,
+            destinatario: req.user?.id,
             leida: false
         });
 
-        res.json({ contador });
+        res.json({ success: true, data: { contador } });
 
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error al obtener contador", error: error.message });
+        res.status(500).json({ success: false, message: 'Error al obtener contador', error: error.message });
     }
 };
 
@@ -52,17 +52,17 @@ export const marcarComoLeida = async (req, res) => {
         const notificacion = await Notificaciones.findById(id);
         
         if (!notificacion) {
-            return res.status(404).json({ message: "Notificación no encontrada" });
+            return res.status(404).json({ success: false, message: 'Notificación no encontrada' });
         }
 
         // Verificar que la notificación pertenece al usuario
-        if (notificacion.destinatario.toString() !== req.user.id) {
-            return res.status(403).json({ message: "No tienes permisos para modificar esta notificación" });
+        if (notificacion.destinatario.toString() !== req.user?.id) {
+            return res.status(403).json({ success: false, message: 'No tienes permisos para modificar esta notificación' });
         }
 
         await notificacion.marcarComoLeida();
 
-        res.json({ message: "Notificación marcada como leída", notificacion });
+        res.json({ success: true, message: 'Notificación marcada como leída', data: notificacion });
 
     } catch (error) {
         console.error(error);
@@ -78,10 +78,7 @@ export const marcarTodasComoLeidas = async (req, res) => {
             { $set: { leida: true, fechaLectura: new Date() } }
         );
 
-        res.json({ 
-            message: "Todas las notificaciones marcadas como leídas",
-            modificadas: resultado.modifiedCount
-        });
+        res.json({ success: true, message: 'Todas las notificaciones marcadas como leídas', data: { modificadas: resultado.modifiedCount } });
 
     } catch (error) {
         console.error(error);

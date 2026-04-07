@@ -1,0 +1,1396 @@
+import multer from 'multer';
+import mongoose from 'mongoose';
+import { uploadFileToDropbox, deleteFileFromDropbox } from '../libs/dropbox.js';
+import { uploadFileToCloudinary, deleteFileFromCloudinary } from '../libs/cloudinary.js';
+import Tarea from '../models/tarea.model.js';
+import Proyecto from '../models/proyecto.model.js';
+import ClienteIdentidad from '../models/clienteIdentidad.model.js';
+import path from 'path';
+import fs from 'fs/promises';
+
+const REQUIRE_DROPBOX_UPLOADS = String(process.env.REQUIRE_DROPBOX_UPLOADS || 'false').toLowerCase() === 'true';
+const DEBUG_UPLOAD_RELACION = String(process.env.DEBUG_UPLOAD_RELACION || 'false').toLowerCase() === 'true';
+
+const buildTraceId = () => `upl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const safeLogData = (value) => {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value)) {
+        return value.map((item) => safeLogData(item)).slice(0, 20);
+    }
+    if (typeof value === 'object') {
+        const next = {};
+        for (const [key, val] of Object.entries(value)) {
+            if (Buffer.isBuffer(val)) {
+                next[key] = `[buffer:${val.length}]`;
+                continue;
+            }
+            if (key.toLowerCase().includes('password') || key.toLowerCase().includes('token')) {
+                next[key] = '[hidden]';
+                continue;
+            }
+            next[key] = safeLogData(val);
+        }
+        return next;
+    }
+    return value;
+};
+
+const traceUploadRelacion = (traceId, stage, payload = {}) => {
+    if (!DEBUG_UPLOAD_RELACION) return;
+    console.info(`[UPLOAD_RELACION][${traceId}][${stage}]`, safeLogData(payload));
+};
+
+// Configurar multer para manejar uploads en memoria
+const storage = multer.memoryStorage();
+
+// Filtro de archivos permitidos
+const fileFilter = (req, file, cb) => {
+    const allowedMimes = [
+        'image/jpeg',
+        'image/jpg',
+        'image/png',
+        'application/pdf',
+        'image/webp',
+        'application/octet-stream',
+        'application/x-sketchup'
+    ];
+
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.pdf', '.webp', '.skp'];
+    const extension = path.extname(file.originalname || '').toLowerCase();
+    
+    if (allowedMimes.includes(file.mimetype) || allowedExtensions.includes(extension)) {
+        cb(null, true);
+    } else {
+        cb(new Error('Tipo de archivo no permitido. Solo se permiten imágenes (JPG, PNG, WEBP), PDFs y SKP'), false);
+    }
+};
+
+const shouldUseDropboxForDesign = (file, tipo = '') => {
+    const extension = path.extname(file?.originalname || '').toLowerCase();
+    if (extension === '.skp') {
+        return true;
+    }
+
+    const tipoNorm = normalizeTextToken(tipo).replace(/[\s-]+/g, '_');
+    const fileNameNorm = normalizeTextToken(file?.originalname || '').replace(/[_-]+/g, ' ');
+
+    const isDesignType = tipoNorm.includes('diseno')
+        || tipoNorm.includes('render')
+        || tipoNorm.includes('sketchup')
+        || tipoNorm.includes('modelo_3d')
+        || tipoNorm.includes('modelo3d');
+
+    if (isDesignType) {
+        return true;
+    }
+
+    return fileNameNorm.includes('diseno') || fileNameNorm.includes('diseño') || fileNameNorm.includes('render');
+};
+
+const normalizeTextToken = (value = '') => String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(String(value || '').trim());
+
+const findClienteIdentidadByCodigoOrId = async (value) => {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+
+    if (isValidObjectId(normalized)) {
+        const byId = await ClienteIdentidad.findById(normalized, { _id: 1, codigo: 1 }).lean();
+        if (byId) return byId;
+    }
+
+    return ClienteIdentidad.findOne({ codigo: normalized.toUpperCase() }, { _id: 1, codigo: 1 }).lean();
+};
+
+const FORMAL_TYPE_TOKENS = new Set([
+    'cotizacion_formal',
+    'cotizacionformal',
+    'hoja_taller',
+    'hoja_de_taller',
+    'hojadetaller',
+    'levantamiento_detallado',
+    'levantamientodetallado',
+    'recibo',
+    'recibos',
+    'contrato',
+    'contratos'
+]);
+
+const FORMAL_NAME_HINTS = [
+    'cotizacion formal',
+    'hoja de taller',
+    'levantamiento detallado',
+    'recibo',
+    'contrato'
+];
+
+const PROCESS_FILE_TYPE_ALIASES = {
+    levantamiento_detallado: 'levantamiento_detallado',
+    levantamientodetallado: 'levantamiento_detallado',
+    levantamiento: 'levantamiento_detallado',
+    diseno: 'diseno',
+    diseno_preliminar: 'diseno',
+    diseno_final: 'diseno',
+    diseno3d: 'diseno',
+    render: 'diseno',
+    sketchup: 'diseno',
+    cotizacion_formal: 'cotizacion_formal',
+    cotizacionformal: 'cotizacion_formal',
+    hoja_taller: 'hoja_taller',
+    hoja_de_taller: 'hoja_taller',
+    hojadetaller: 'hoja_taller',
+    recibo: 'recibo_1',
+    recibo1: 'recibo_1',
+    recibo_1: 'recibo_1',
+    recibo2: 'recibo_2',
+    recibo_2: 'recibo_2',
+    recibo3: 'recibo_3',
+    recibo_3: 'recibo_3',
+    contrato: 'contrato',
+    fotosproyecto: 'fotos_proyecto',
+    fotos_proyecto: 'fotos_proyecto',
+    foto_proyecto: 'fotos_proyecto'
+};
+
+const PROCESS_FILE_TYPES = new Set([
+    'levantamiento_detallado',
+    'diseno',
+    'cotizacion_formal',
+    'hoja_taller',
+    'recibo_1',
+    'recibo_2',
+    'recibo_3',
+    'contrato',
+    'fotos_proyecto'
+]);
+
+const DROPBOX_ONLY_PROCESS_TYPES = new Set(['diseno']);
+const CLOUDINARY_ONLY_PROCESS_TYPES = new Set([
+    'levantamiento_detallado',
+    'cotizacion_formal',
+    'hoja_taller',
+    'recibo_1',
+    'recibo_2',
+    'recibo_3',
+    'contrato',
+    'fotos_proyecto'
+]);
+
+const SINGLE_SLOT_PROCESS_TYPES = new Set([
+    'levantamiento_detallado',
+    'diseno',
+    'cotizacion_formal',
+    'hoja_taller',
+    'recibo_1',
+    'recibo_2',
+    'recibo_3',
+    'contrato'
+]);
+
+const normalizeProcessFileType = (tipo = '') => {
+    const normalized = normalizeTextToken(tipo).replace(/[\s-]+/g, '_');
+    return PROCESS_FILE_TYPE_ALIASES[normalized] || normalized || 'otro';
+};
+
+const isManagedProcessType = (tipo = '') => PROCESS_FILE_TYPES.has(normalizeProcessFileType(tipo));
+
+const resolveStrictProviderByType = (tipo = '') => {
+    const canonicalType = normalizeProcessFileType(tipo);
+    if (DROPBOX_ONLY_PROCESS_TYPES.has(canonicalType)) return 'dropbox';
+    if (CLOUDINARY_ONLY_PROCESS_TYPES.has(canonicalType)) return 'cloudinary';
+    return null;
+};
+
+const shouldKeepSingleSlotByType = (tipo = '') => SINGLE_SLOT_PROCESS_TYPES.has(normalizeProcessFileType(tipo));
+
+const isFormalDocumentType = (tipo = '') => {
+    const tipoNorm = normalizeTextToken(tipo).replace(/[\s-]+/g, '_');
+    if (!tipoNorm) return false;
+    if (FORMAL_TYPE_TOKENS.has(tipoNorm)) return true;
+    return Array.from(FORMAL_TYPE_TOKENS).some((token) => tipoNorm.includes(token));
+};
+
+const shouldUseCloudinaryForFormalDocs = ({ tipo, fileName }) => {
+    const tipoNorm = normalizeTextToken(tipo).replace(/[\s-]+/g, '_');
+    const tipoNormForHint = tipoNorm.replace(/_/g, ' ');
+    if (FORMAL_TYPE_TOKENS.has(tipoNorm)) {
+        return true;
+    }
+
+    if (FORMAL_NAME_HINTS.some((hint) => tipoNormForHint.includes(hint))) {
+        return true;
+    }
+
+    const fileNameNorm = normalizeTextToken(fileName).replace(/[_-]+/g, ' ');
+    return FORMAL_NAME_HINTS.some((hint) => fileNameNorm.includes(hint));
+};
+
+const removeDuplicatedBySlot = async ({ model, resourceId, archivo }) => {
+    if (!resourceId || !isValidObjectId(resourceId) || !archivo) return;
+
+    const pullConditions = [];
+    if (archivo.key) {
+        pullConditions.push({ key: archivo.key });
+    }
+    if (archivo.url) {
+        pullConditions.push({ url: archivo.url });
+    }
+    if (shouldKeepSingleSlotByType(archivo.tipo)) {
+        pullConditions.push({ tipo: archivo.tipo });
+    }
+
+    if (!pullConditions.length) return;
+
+    await model.updateOne(
+        { _id: resourceId },
+        {
+            $pull: {
+                archivos: {
+                    $or: pullConditions
+                }
+            }
+        }
+    );
+};
+
+const removeDuplicatedClienteArchivo = async ({ clienteMongoId, clienteCodigo, archivo }) => {
+    if (!archivo || (!clienteMongoId && !clienteCodigo)) return;
+
+    const filter = clienteMongoId
+        ? { _id: clienteMongoId }
+        : { codigo: String(clienteCodigo).trim().toUpperCase() };
+
+    const pullConditions = [];
+    if (archivo.key) {
+        pullConditions.push({ key: archivo.key });
+    }
+    if (archivo.url) {
+        pullConditions.push({ url: archivo.url });
+    }
+
+    if (shouldKeepSingleSlotByType(archivo.tipo)) {
+        if (archivo.taskId) {
+            pullConditions.push({ tipo: archivo.tipo, taskId: archivo.taskId });
+        } else if (archivo.proyectoId) {
+            pullConditions.push({ tipo: archivo.tipo, proyectoId: archivo.proyectoId });
+        } else if (archivo.relacionadoA === 'cliente' && archivo.relacionadoId) {
+            pullConditions.push({ tipo: archivo.tipo, relacionadoA: 'cliente', relacionadoId: archivo.relacionadoId });
+        }
+    }
+
+    if (!pullConditions.length) return;
+
+    await ClienteIdentidad.updateOne(filter, {
+        $pull: {
+            archivos: {
+                $or: pullConditions
+            }
+        }
+    });
+};
+
+const shouldForceDropboxByRelation = async ({ relacionadoA, relacionadoId }) => {
+    if (!relacionadoId) return false;
+
+    if (relacionadoA === 'tarea') {
+        if (!isValidObjectId(relacionadoId)) return false;
+        const tarea = await Tarea.findById(relacionadoId, { etapa: 1, sourceType: 1 }).lean();
+        return Boolean(tarea && (tarea.etapa === 'disenos' || tarea.sourceType === 'diseno'));
+    }
+
+    if (relacionadoA === 'proyecto') {
+        const proyectoId = String(relacionadoId || '').trim();
+        if (!proyectoId) return false;
+
+        const tareaDiseno = await Tarea.findOne({
+            proyectoId,
+            $or: [{ etapa: 'disenos' }, { sourceType: 'diseno' }]
+        }, { _id: 1 }).lean();
+
+        return Boolean(tareaDiseno);
+    }
+
+    return false;
+};
+
+const isValidUploadType = (file) => {
+    const extension = path.extname(file?.originalname || '').toLowerCase();
+    if (extension === '.skp') return true;
+    const allowedTypes = ['image/jpeg', 'image/png', 'application/pdf'];
+    return allowedTypes.includes(file?.mimetype);
+};
+
+const validateFileSize = (fileSize, maxSize = 10) => {
+    const maxSizeBytes = maxSize * 1024 * 1024;
+    return Number(fileSize || 0) <= maxSizeBytes;
+};
+
+const sanitizeFilename = (fileName) => {
+    return String(fileName || 'archivo.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+};
+
+const uploadFileToLocalFallback = async (file, folder, req) => {
+    const safeFolder = String(folder || 'general').replace(/^\/+|\/+$/g, '');
+    const safeName = `${Date.now()}-${sanitizeFilename(file?.originalname)}`;
+    const relativePath = `uploads/${safeFolder}/${safeName}`;
+    const absolutePath = path.join(process.cwd(), relativePath);
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, file.buffer);
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    return {
+        provider: 'local',
+        key: `local:${relativePath.replace(/\\/g, '/')}`,
+        url: `${baseUrl}/${relativePath.replace(/\\/g, '/')}`
+    };
+};
+
+const deleteLocalFallbackFile = async (key) => {
+    const relativePath = String(key || '').replace(/^local:/, '');
+    if (!relativePath.startsWith('uploads/')) {
+        throw new Error('Key local inválida');
+    }
+
+    const absolutePath = path.join(process.cwd(), relativePath);
+    await fs.unlink(absolutePath);
+    return true;
+};
+
+const resolveStorageFolder = (relacionadoA) => {
+    if (relacionadoA === 'tarea') return 'tareas';
+    if (relacionadoA === 'proyecto') return 'proyectos';
+    if (relacionadoA === 'cotizacion') return 'cotizaciones';
+    if (relacionadoA === 'cliente') return 'clientes';
+    return 'general';
+};
+
+const findClienteContextByRelation = async ({ relacionadoA, relacionadoId }) => {
+    const result = {
+        clienteCodigo: '',
+        clienteMongoId: null,
+        taskId: '',
+        proyectoId: ''
+    };
+
+    if (!relacionadoId) {
+        traceUploadRelacion('context', 'findClienteContextByRelation.noRelacionadoId', {
+            relacionadoA,
+            relacionadoId
+        });
+        return result;
+    }
+
+    if (relacionadoA === 'cliente') {
+        const cliente = await findClienteIdentidadByCodigoOrId(relacionadoId);
+        traceUploadRelacion('context', 'findClienteContextByRelation.byCliente', {
+            relacionadoId,
+            found: Boolean(cliente),
+            clienteId: cliente?._id || null
+        });
+        if (cliente) {
+            result.clienteCodigo = cliente.codigo;
+            result.clienteMongoId = cliente._id;
+        }
+        return result;
+    }
+
+    if (relacionadoA === 'tarea') {
+        if (!isValidObjectId(relacionadoId)) {
+            traceUploadRelacion('context', 'findClienteContextByRelation.byTarea.invalidId', {
+                relacionadoId
+            });
+            return result;
+        }
+
+        const task = await Tarea.findById(relacionadoId, { _id: 1, clienteId: 1, clienteRef: 1, proyectoId: 1 }).lean();
+        traceUploadRelacion('context', 'findClienteContextByRelation.byTarea.lookup', {
+            relacionadoId,
+            found: Boolean(task)
+        });
+        if (!task) {
+            return result;
+        }
+
+        result.taskId = String(task._id);
+        result.proyectoId = task.proyectoId ? String(task.proyectoId) : '';
+        result.clienteCodigo = String(task.clienteId || '').trim().toUpperCase();
+        result.clienteMongoId = task.clienteRef || null;
+        return result;
+    }
+
+    if (relacionadoA === 'proyecto') {
+        if (!isValidObjectId(relacionadoId)) {
+            traceUploadRelacion('context', 'findClienteContextByRelation.byProyecto.invalidId', {
+                relacionadoId
+            });
+            return result;
+        }
+
+        const project = await Proyecto.findById(relacionadoId, { _id: 1, clienteId: 1, clienteRef: 1 }).lean();
+        traceUploadRelacion('context', 'findClienteContextByRelation.byProyecto.lookup', {
+            relacionadoId,
+            found: Boolean(project)
+        });
+        if (!project) {
+            return result;
+        }
+
+        result.proyectoId = String(project._id);
+        result.clienteCodigo = String(project.clienteId || '').trim().toUpperCase();
+        result.clienteMongoId = project.clienteRef || null;
+        return result;
+    }
+
+    return result;
+};
+
+const resolveClienteTarget = async ({ clienteId, relacionadoA, relacionadoId }) => {
+    const normalizedClienteId = String(clienteId || '').trim().toUpperCase();
+    traceUploadRelacion('context', 'resolveClienteTarget.input', {
+        clienteId,
+        normalizedClienteId,
+        relacionadoA,
+        relacionadoId
+    });
+
+    if (normalizedClienteId) {
+        const cliente = await findClienteIdentidadByCodigoOrId(clienteId);
+        const resolved = {
+            clienteCodigo: cliente?.codigo || normalizedClienteId,
+            clienteMongoId: cliente?._id || null,
+            taskId: relacionadoA === 'tarea' ? String(relacionadoId || '') : '',
+            proyectoId: relacionadoA === 'proyecto' ? String(relacionadoId || '') : ''
+        };
+
+        traceUploadRelacion('context', 'resolveClienteTarget.fromClienteId', {
+            foundCliente: Boolean(cliente),
+            resolved
+        });
+
+        return resolved;
+    }
+
+    const resolvedByRelation = await findClienteContextByRelation({ relacionadoA, relacionadoId });
+    traceUploadRelacion('context', 'resolveClienteTarget.fromRelation', {
+        resolvedByRelation
+    });
+    return resolvedByRelation;
+};
+
+const appendArchivoToCliente = async ({ clienteMongoId, clienteCodigo, archivo }) => {
+    if (!clienteMongoId && !clienteCodigo) {
+        traceUploadRelacion('persist', 'appendArchivoToCliente.skipped.noTarget', {
+            clienteMongoId,
+            clienteCodigo,
+            archivo
+        });
+        return false;
+    }
+
+    const filter = clienteMongoId
+        ? { _id: clienteMongoId }
+        : { codigo: String(clienteCodigo).trim().toUpperCase() };
+
+    await removeDuplicatedClienteArchivo({ clienteMongoId, clienteCodigo, archivo });
+
+    const updateResult = await ClienteIdentidad.updateOne(filter, {
+        $push: {
+            archivos: archivo
+        }
+    });
+
+    traceUploadRelacion('persist', 'appendArchivoToCliente.result', {
+        filter,
+        matchedCount: updateResult?.matchedCount,
+        modifiedCount: updateResult?.modifiedCount,
+        upsertedCount: updateResult?.upsertedCount,
+        archivo
+    });
+
+    return updateResult?.matchedCount > 0;
+};
+
+const appendArchivoToTarea = async ({ tareaId, archivo }) => {
+    if (!tareaId || !isValidObjectId(tareaId)) {
+        traceUploadRelacion('persist', 'appendArchivoToTarea.skipped.invalidId', {
+            tareaId,
+            archivo
+        });
+        return false;
+    }
+
+    await removeDuplicatedBySlot({ model: Tarea, resourceId: tareaId, archivo });
+
+    const updateResult = await Tarea.updateOne({ _id: tareaId }, {
+        $push: {
+            archivos: archivo
+        }
+    });
+
+    traceUploadRelacion('persist', 'appendArchivoToTarea.result', {
+        tareaId,
+        matchedCount: updateResult?.matchedCount,
+        modifiedCount: updateResult?.modifiedCount,
+        archivo
+    });
+
+    return updateResult?.matchedCount > 0;
+};
+
+const appendArchivoToProyecto = async ({ proyectoId, archivo }) => {
+    if (!proyectoId || !isValidObjectId(proyectoId)) {
+        traceUploadRelacion('persist', 'appendArchivoToProyecto.skipped.invalidId', {
+            proyectoId,
+            archivo
+        });
+        return false;
+    }
+
+    await removeDuplicatedBySlot({ model: Proyecto, resourceId: proyectoId, archivo });
+
+    const updateResult = await Proyecto.updateOne({ _id: proyectoId }, {
+        $push: {
+            archivos: archivo
+        }
+    });
+
+    traceUploadRelacion('persist', 'appendArchivoToProyecto.result', {
+        proyectoId,
+        matchedCount: updateResult?.matchedCount,
+        modifiedCount: updateResult?.modifiedCount,
+        archivo
+    });
+
+    return updateResult?.matchedCount > 0;
+};
+
+const uploadWithSelectedProvider = async ({ file, req, tipoNormalizado, folder, forceDropbox = false, strictProvider = null }) => {
+    const isFormalDoc = shouldUseCloudinaryForFormalDocs({
+        tipo: tipoNormalizado,
+        fileName: file?.originalname
+    });
+
+    if (strictProvider === 'dropbox') {
+        try {
+            return await uploadFileToDropbox(file.buffer, file.originalname, folder);
+        } catch (dropboxError) {
+            const strictError = new Error('Dropbox no disponible para tipo de archivo que requiere Dropbox');
+            strictError.details = dropboxError?.details || { raw: dropboxError?.message };
+            throw strictError;
+        }
+    }
+
+    if (strictProvider === 'cloudinary') {
+        const cloudinaryFolder = `formal/${folder}`;
+        try {
+            return await uploadFileToCloudinary(
+                file.buffer,
+                file.originalname,
+                file.mimetype,
+                cloudinaryFolder
+            );
+        } catch (cloudinaryError) {
+            const strictCloudinaryError = new Error('Cloudinary no disponible para tipo de archivo que requiere Cloudinary');
+            strictCloudinaryError.details = cloudinaryError?.details || { raw: cloudinaryError?.message };
+            throw strictCloudinaryError;
+        }
+    }
+
+    if (!isFormalDoc && (forceDropbox || shouldUseDropboxForDesign(file, tipoNormalizado))) {
+        try {
+            return await uploadFileToDropbox(file.buffer, file.originalname, folder);
+        } catch (dropboxError) {
+            if (REQUIRE_DROPBOX_UPLOADS) {
+                const strictError = new Error('Dropbox no disponible y REQUIRE_DROPBOX_UPLOADS=true');
+                strictError.details = dropboxError?.details || { raw: dropboxError?.message };
+                throw strictError;
+            }
+            console.error('Dropbox falló, usando fallback local:', dropboxError?.message);
+            const fallback = await uploadFileToLocalFallback(file, folder, req);
+            return {
+                ...fallback,
+                warning: 'Dropbox no disponible: se guardó en almacenamiento local temporal'
+            };
+        }
+    }
+
+    const cloudinaryFolder = isFormalDoc
+        ? `formal/${folder}`
+        : folder;
+
+    try {
+        return await uploadFileToCloudinary(
+            file.buffer,
+            file.originalname,
+            file.mimetype,
+            cloudinaryFolder
+        );
+    } catch (cloudinaryError) {
+        if (isFormalDoc) {
+            const strictCloudinaryError = new Error('Cloudinary no disponible para documento formal');
+            strictCloudinaryError.details = cloudinaryError?.details || { raw: cloudinaryError?.message };
+            throw strictCloudinaryError;
+        }
+
+        console.error('Cloudinary falló, usando fallback local:', cloudinaryError?.message);
+        const fallback = await uploadFileToLocalFallback(file, folder, req);
+        return {
+            ...fallback,
+            warning: 'Cloudinary no disponible: se guardó en almacenamiento local temporal'
+        };
+    }
+};
+
+// Configurar multer
+export const upload = multer({
+    storage: storage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB límite
+    },
+    fileFilter: fileFilter
+});
+
+/**
+ * Subir archivo con seleccion automatica de provider.
+ * Diseño -> Dropbox. Resto -> Cloudinary.
+ * Si proveedor remoto falla, usa fallback local temporal.
+ * POST /api/archivos/upload
+ * Content-Type: multipart/form-data
+ * Body: file, tipo, relacionadoA, relacionadoId
+ */
+export const subirArchivo = async (req, res) => {
+    try {
+        const traceId = buildTraceId();
+        const incomingFile = req.file || (Array.isArray(req.files) ? req.files[0] : null);
+
+        traceUploadRelacion(traceId, 'subirArchivo.input', {
+            body: req.body,
+            file: incomingFile
+                ? {
+                    originalname: incomingFile.originalname,
+                    mimetype: incomingFile.mimetype,
+                    size: incomingFile.size
+                }
+                : null
+        });
+
+        // Verificar que se haya subido un archivo
+        if (!incomingFile) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se proporcionó ningún archivo'
+            });
+        }
+
+        const { tipo, relacionadoA, relacionadoId, clienteId } = req.body;
+
+        // Validar tipo de archivo
+        if (!isValidUploadType(incomingFile)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Tipo de archivo no permitido'
+            });
+        }
+
+        // Validar tamaño del archivo
+        if (!validateFileSize(incomingFile.size)) {
+            return res.status(400).json({
+                success: false,
+                message: 'El archivo excede el tamaño máximo permitido de 10MB'
+            });
+        }
+
+        // Si no llegan metadatos (flujo frontend simple), usar valores por defecto.
+        const tipoNormalizado = normalizeProcessFileType(tipo || 'otro');
+        const isFormalDocType = isFormalDocumentType(tipoNormalizado);
+        const strictProvider = resolveStrictProviderByType(tipoNormalizado);
+
+        if (isManagedProcessType(tipoNormalizado) && !String(clienteId || '').trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'clienteId es obligatorio para los archivos del proceso del cliente'
+            });
+        }
+
+        let relacionadoANormalizado = relacionadoA || 'tarea';
+        let relacionadoIdNormalizado = relacionadoId || 'temporal';
+        let clienteContext;
+
+        if (isFormalDocType) {
+            if (!String(clienteId || '').trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'clienteId es obligatorio para documentos formales'
+                });
+            }
+
+            const formalCliente = await findClienteIdentidadByCodigoOrId(clienteId);
+            if (!formalCliente) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Cliente no encontrado para clienteId en documento formal'
+                });
+            }
+
+            if (!String(relacionadoA || '').trim() || !String(relacionadoId || '').trim()) {
+                relacionadoANormalizado = 'cliente';
+                relacionadoIdNormalizado = formalCliente.codigo;
+            }
+            clienteContext = {
+                clienteCodigo: formalCliente.codigo,
+                clienteMongoId: formalCliente._id,
+                taskId: relacionadoANormalizado === 'tarea' ? String(relacionadoIdNormalizado || '') : '',
+                proyectoId: relacionadoANormalizado === 'proyecto' ? String(relacionadoIdNormalizado || '') : ''
+            };
+        }
+
+        const forceDropboxByContext = await shouldForceDropboxByRelation({
+            relacionadoA: relacionadoANormalizado,
+            relacionadoId: relacionadoIdNormalizado
+        });
+        const forceDropbox = strictProvider === 'dropbox' ? true : (strictProvider ? false : (isFormalDocType ? false : forceDropboxByContext));
+
+        if (!clienteContext) {
+            clienteContext = await resolveClienteTarget({
+                clienteId,
+                relacionadoA: relacionadoANormalizado,
+                relacionadoId: relacionadoIdNormalizado
+            });
+        }
+        const clienteIdNormalizado = clienteContext.clienteCodigo || String(clienteId || '').trim().toUpperCase();
+
+        traceUploadRelacion(traceId, 'subirArchivo.clienteContext', {
+            clienteContext,
+            clienteIdNormalizado,
+            tipoNormalizado,
+            relacionadoANormalizado,
+            relacionadoIdNormalizado,
+            forceDropbox,
+            strictProvider
+        });
+
+        // Determinar la carpeta según el tipo
+        const folder = resolveStorageFolder(relacionadoANormalizado);
+        const resultado = await uploadWithSelectedProvider({
+            file: incomingFile,
+            req,
+            tipoNormalizado,
+            folder,
+            forceDropbox,
+            strictProvider
+        });
+
+        if ((isFormalDocType || strictProvider === 'cloudinary') && (resultado.provider || '').toLowerCase() !== 'cloudinary') {
+            return res.status(500).json({
+                success: false,
+                message: 'Documento formal debe almacenarse en Cloudinary',
+                details: { provider: resultado.provider || 'unknown' }
+            });
+        }
+
+        if (strictProvider === 'dropbox' && (resultado.provider || '').toLowerCase() !== 'dropbox') {
+            return res.status(500).json({
+                success: false,
+                message: 'Archivo de diseno debe almacenarse en Dropbox',
+                details: { provider: resultado.provider || 'unknown' }
+            });
+        }
+
+        const warnings = [];
+        if (resultado.warning) {
+            warnings.push(resultado.warning);
+        }
+
+        // Preparar respuesta
+        const archivoInfo = {
+            id: Date.now().toString(),
+            nombre: incomingFile.originalname,
+            tipo: tipoNormalizado,
+            url: resultado.url,
+            key: resultado.key,
+            provider: resultado.provider || 'local',
+            tamano: incomingFile.size,
+            mimeType: incomingFile.mimetype,
+            relacionadoA: relacionadoANormalizado,
+            relacionadoId: relacionadoIdNormalizado,
+            clienteId: clienteIdNormalizado,
+            createdAt: new Date()
+        };
+
+        traceUploadRelacion(traceId, 'subirArchivo.archivoInfo', {
+            archivoInfo
+        });
+
+        if (clienteContext?.clienteMongoId || clienteIdNormalizado) {
+            const persistedInCliente = await appendArchivoToCliente({
+                clienteMongoId: clienteContext.clienteMongoId,
+                clienteCodigo: clienteIdNormalizado,
+                archivo: {
+                    id: archivoInfo.id,
+                    taskId: clienteContext.taskId || '',
+                    proyectoId: clienteContext.proyectoId || '',
+                    tipo: archivoInfo.tipo,
+                    nombre: archivoInfo.nombre,
+                    url: archivoInfo.url,
+                    key: archivoInfo.key,
+                    provider: archivoInfo.provider,
+                    mimeType: archivoInfo.mimeType,
+                    relacionadoA: archivoInfo.relacionadoA,
+                    relacionadoId: archivoInfo.relacionadoId,
+                    clienteId: archivoInfo.clienteId,
+                    createdAt: archivoInfo.createdAt
+                }
+            });
+
+            if (!persistedInCliente) {
+                warnings.push(`No se encontro cliente con codigo ${clienteIdNormalizado} para persistir relacion de archivo`);
+            }
+
+            traceUploadRelacion(traceId, 'subirArchivo.persistResult', {
+                persistedInCliente,
+                clienteIdNormalizado,
+                clienteMongoId: clienteContext?.clienteMongoId || null
+            });
+        }
+
+        // Guardar también en Tarea si está relacionado a una tarea
+        if (relacionadoANormalizado === 'tarea' && clienteContext?.taskId) {
+            const persistedInTarea = await appendArchivoToTarea({
+                tareaId: clienteContext.taskId,
+                archivo: {
+                    id: archivoInfo.id,
+                    tipo: archivoInfo.tipo,
+                    nombre: archivoInfo.nombre,
+                    url: archivoInfo.url,
+                    key: archivoInfo.key,
+                    provider: archivoInfo.provider,
+                    mimeType: archivoInfo.mimeType,
+                    clienteId: archivoInfo.clienteId,
+                    createdAt: archivoInfo.createdAt
+                }
+            });
+
+            if (!persistedInTarea) {
+                warnings.push(`No se pudo guardar archivo en tarea ${clienteContext.taskId}`);
+            }
+
+            traceUploadRelacion(traceId, 'subirArchivo.persistInTarea', {
+                persistedInTarea,
+                tareaId: clienteContext.taskId
+            });
+        }
+
+        // Guardar también en Proyecto si está relacionado a un proyecto
+        if (relacionadoANormalizado === 'proyecto' && clienteContext?.proyectoId) {
+            const persistedInProyecto = await appendArchivoToProyecto({
+                proyectoId: clienteContext.proyectoId,
+                archivo: {
+                    id: archivoInfo.id,
+                    tipo: archivoInfo.tipo,
+                    nombre: archivoInfo.nombre,
+                    url: archivoInfo.url,
+                    key: archivoInfo.key,
+                    provider: archivoInfo.provider,
+                    mimeType: archivoInfo.mimeType,
+                    clienteId: archivoInfo.clienteId,
+                    createdAt: archivoInfo.createdAt
+                }
+            });
+
+            if (!persistedInProyecto) {
+                warnings.push(`No se pudo guardar archivo en proyecto ${clienteContext.proyectoId}`);
+            }
+
+            traceUploadRelacion(traceId, 'subirArchivo.persistInProyecto', {
+                persistedInProyecto,
+                proyectoId: clienteContext.proyectoId
+            });
+        }
+
+        if (warnings.length) {
+            archivoInfo.warning = warnings.join(' | ');
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'Archivo subido exitosamente',
+            url: resultado.url,
+            fileUrl: resultado.url,
+            provider: resultado.provider || 'local',
+            clienteId: clienteIdNormalizado,
+            warning: warnings.length ? warnings.join(' | ') : undefined,
+            data: archivoInfo
+        });
+
+        traceUploadRelacion(traceId, 'subirArchivo.response.ok', {
+            warning: warnings.length ? warnings.join(' | ') : undefined,
+            data: archivoInfo
+        });
+
+    } catch (error) {
+        console.error('Error al subir archivo:', error);
+        traceUploadRelacion('error', 'subirArchivo.catch', {
+            message: error?.message,
+            stack: error?.stack,
+            details: error?.details || null
+        });
+        res.status(500).json({
+            success: false,
+            message: 'Error al subir archivo',
+            error: error.message,
+            details: error?.details || undefined
+        });
+    }
+};
+
+/**
+ * Subir múltiples archivos
+ * POST /api/archivos/upload-multiple
+ * Content-Type: multipart/form-data
+ * Body: files[], tipo, relacionadoA, relacionadoId
+ */
+export const subirMultiplesArchivos = async (req, res) => {
+    try {
+        const traceId = buildTraceId();
+        traceUploadRelacion(traceId, 'subirMultiples.input', {
+            body: req.body,
+            fileCount: Array.isArray(req.files) ? req.files.length : 0,
+            files: Array.isArray(req.files)
+                ? req.files.map((f) => ({
+                    originalname: f.originalname,
+                    mimetype: f.mimetype,
+                    size: f.size
+                }))
+                : []
+        });
+
+        // Verificar que se hayan subido archivos
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No se proporcionaron archivos'
+            });
+        }
+
+        const { tipo, relacionadoA, relacionadoId, clienteId } = req.body;
+
+        const tipoNormalizado = normalizeProcessFileType(tipo || 'otro');
+        const isFormalDocType = isFormalDocumentType(tipoNormalizado);
+        const strictProvider = resolveStrictProviderByType(tipoNormalizado);
+
+        if (isManagedProcessType(tipoNormalizado) && !String(clienteId || '').trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'clienteId es obligatorio para los archivos del proceso del cliente'
+            });
+        }
+
+        let relacionadoANormalizado = relacionadoA || 'tarea';
+        let relacionadoIdNormalizado = relacionadoId || 'temporal';
+        let clienteContext;
+
+        if (isFormalDocType) {
+            if (!String(clienteId || '').trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'clienteId es obligatorio para documentos formales'
+                });
+            }
+
+            const formalCliente = await findClienteIdentidadByCodigoOrId(clienteId);
+            if (!formalCliente) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Cliente no encontrado para clienteId en documento formal'
+                });
+            }
+
+            if (!String(relacionadoA || '').trim() || !String(relacionadoId || '').trim()) {
+                relacionadoANormalizado = 'cliente';
+                relacionadoIdNormalizado = formalCliente.codigo;
+            }
+            clienteContext = {
+                clienteCodigo: formalCliente.codigo,
+                clienteMongoId: formalCliente._id,
+                taskId: relacionadoANormalizado === 'tarea' ? String(relacionadoIdNormalizado || '') : '',
+                proyectoId: relacionadoANormalizado === 'proyecto' ? String(relacionadoIdNormalizado || '') : ''
+            };
+        }
+
+        const forceDropboxByContext = await shouldForceDropboxByRelation({
+            relacionadoA: relacionadoANormalizado,
+            relacionadoId: relacionadoIdNormalizado
+        });
+        const forceDropbox = strictProvider === 'dropbox' ? true : (strictProvider ? false : (isFormalDocType ? false : forceDropboxByContext));
+
+        if (!clienteContext) {
+            clienteContext = await resolveClienteTarget({
+                clienteId,
+                relacionadoA: relacionadoANormalizado,
+                relacionadoId: relacionadoIdNormalizado
+            });
+        }
+        const clienteIdNormalizado = clienteContext.clienteCodigo || String(clienteId || '').trim().toUpperCase();
+
+        traceUploadRelacion(traceId, 'subirMultiples.clienteContext', {
+            clienteContext,
+            clienteIdNormalizado,
+            tipoNormalizado,
+            relacionadoANormalizado,
+            relacionadoIdNormalizado,
+            forceDropbox,
+            strictProvider
+        });
+
+        // Determinar la carpeta según el tipo
+        const folder = resolveStorageFolder(relacionadoANormalizado);
+
+        // Subir todos los archivos
+        const archivosSubidos = [];
+        const errores = [];
+
+        for (const file of req.files) {
+            try {
+                // Validar cada archivo
+                if (!isValidUploadType(file)) {
+                    traceUploadRelacion(traceId, 'subirMultiples.file.invalidType', {
+                        nombre: file.originalname,
+                        mimetype: file.mimetype
+                    });
+                    errores.push({
+                        nombre: file.originalname,
+                        error: 'Tipo de archivo no permitido'
+                    });
+                    continue;
+                }
+
+                if (!validateFileSize(file.size)) {
+                    traceUploadRelacion(traceId, 'subirMultiples.file.invalidSize', {
+                        nombre: file.originalname,
+                        size: file.size
+                    });
+                    errores.push({
+                        nombre: file.originalname,
+                        error: 'Archivo excede 10MB'
+                    });
+                    continue;
+                }
+
+                // Subir archivo
+                const resultado = await uploadWithSelectedProvider({
+                    file,
+                    req,
+                    tipoNormalizado,
+                    folder,
+                    forceDropbox,
+                    strictProvider
+                });
+
+                if ((isFormalDocType || strictProvider === 'cloudinary') && (resultado.provider || '').toLowerCase() !== 'cloudinary') {
+                    throw new Error('Documento formal debe almacenarse en Cloudinary');
+                }
+
+                if (strictProvider === 'dropbox' && (resultado.provider || '').toLowerCase() !== 'dropbox') {
+                    throw new Error('Archivo de diseno debe almacenarse en Dropbox');
+                }
+
+                const archivoSubido = {
+                    id: Date.now().toString() + Math.random(),
+                    nombre: file.originalname,
+                    tipo: tipoNormalizado,
+                    url: resultado.url,
+                    key: resultado.key,
+                    provider: resultado.provider || 'local',
+                    tamano: file.size,
+                    mimeType: file.mimetype,
+                    relacionadoA: relacionadoANormalizado,
+                    relacionadoId: relacionadoIdNormalizado,
+                    clienteId: clienteIdNormalizado,
+                    createdAt: new Date()
+                };
+
+                if (clienteContext?.clienteMongoId || clienteIdNormalizado) {
+                    const persistedInCliente = await appendArchivoToCliente({
+                        clienteMongoId: clienteContext.clienteMongoId,
+                        clienteCodigo: clienteIdNormalizado,
+                        archivo: {
+                            id: archivoSubido.id,
+                            taskId: clienteContext.taskId || '',
+                            proyectoId: clienteContext.proyectoId || '',
+                            tipo: archivoSubido.tipo,
+                            nombre: archivoSubido.nombre,
+                            url: archivoSubido.url,
+                            key: archivoSubido.key,
+                            provider: archivoSubido.provider,
+                            mimeType: archivoSubido.mimeType,
+                            relacionadoA: archivoSubido.relacionadoA,
+                            relacionadoId: archivoSubido.relacionadoId,
+                            clienteId: archivoSubido.clienteId,
+                            createdAt: archivoSubido.createdAt
+                        }
+                    });
+
+                    if (!persistedInCliente) {
+                        archivoSubido.warning = `No se encontro cliente con codigo ${clienteIdNormalizado} para persistir relacion de archivo`;
+                    }
+
+                    traceUploadRelacion(traceId, 'subirMultiples.file.persistResult', {
+                        nombre: file.originalname,
+                        persistedInCliente,
+                        clienteIdNormalizado,
+                        clienteMongoId: clienteContext?.clienteMongoId || null,
+                        archivoSubido
+                    });
+                }
+
+                // Guardar también en Tarea si está relacionado a una tarea
+                if (relacionadoANormalizado === 'tarea' && clienteContext?.taskId) {
+                    const persistedInTarea = await appendArchivoToTarea({
+                        tareaId: clienteContext.taskId,
+                        archivo: {
+                            id: archivoSubido.id,
+                            tipo: archivoSubido.tipo,
+                            nombre: archivoSubido.nombre,
+                            url: archivoSubido.url,
+                            key: archivoSubido.key,
+                            provider: archivoSubido.provider,
+                            mimeType: archivoSubido.mimeType,
+                            clienteId: archivoSubido.clienteId,
+                            createdAt: archivoSubido.createdAt
+                        }
+                    });
+
+                    if (!persistedInTarea) {
+                        archivoSubido.warning = (archivoSubido.warning || '') + `| No se pudo guardar archivo en tarea`;
+                    }
+
+                    traceUploadRelacion(traceId, 'subirMultiples.file.persistInTarea', {
+                        nombre: file.originalname,
+                        persistedInTarea,
+                        tareaId: clienteContext.taskId
+                    });
+                }
+
+                // Guardar también en Proyecto si está relacionado a un proyecto
+                if (relacionadoANormalizado === 'proyecto' && clienteContext?.proyectoId) {
+                    const persistedInProyecto = await appendArchivoToProyecto({
+                        proyectoId: clienteContext.proyectoId,
+                        archivo: {
+                            id: archivoSubido.id,
+                            tipo: archivoSubido.tipo,
+                            nombre: archivoSubido.nombre,
+                            url: archivoSubido.url,
+                            key: archivoSubido.key,
+                            provider: archivoSubido.provider,
+                            mimeType: archivoSubido.mimeType,
+                            clienteId: archivoSubido.clienteId,
+                            createdAt: archivoSubido.createdAt
+                        }
+                    });
+
+                    if (!persistedInProyecto) {
+                        archivoSubido.warning = (archivoSubido.warning || '') + `| No se pudo guardar archivo en proyecto`;
+                    }
+
+                    traceUploadRelacion(traceId, 'subirMultiples.file.persistInProyecto', {
+                        nombre: file.originalname,
+                        persistedInProyecto,
+                        proyectoId: clienteContext.proyectoId
+                    });
+                }
+
+                archivosSubidos.push(archivoSubido);
+                traceUploadRelacion(traceId, 'subirMultiples.file.success', {
+                    nombre: file.originalname,
+                    archivoSubido
+                });
+
+            } catch (error) {
+                traceUploadRelacion(traceId, 'subirMultiples.file.error', {
+                    nombre: file.originalname,
+                    message: error?.message,
+                    details: error?.details || null
+                });
+                errores.push({
+                    nombre: file.originalname,
+                    error: error.message
+                });
+            }
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `${archivosSubidos.length} archivos subidos exitosamente`,
+            data: {
+                archivosSubidos,
+                errores: errores.length > 0 ? errores : undefined
+            }
+        });
+
+        traceUploadRelacion(traceId, 'subirMultiples.response.ok', {
+            uploadedCount: archivosSubidos.length,
+            errorsCount: errores.length
+        });
+
+    } catch (error) {
+        console.error('Error al subir archivos múltiples:', error);
+        traceUploadRelacion('error', 'subirMultiples.catch', {
+            message: error?.message,
+            stack: error?.stack,
+            details: error?.details || null
+        });
+        res.status(500).json({
+            success: false,
+            message: 'Error al subir archivos',
+            error: error.message,
+            details: error?.details || undefined
+        });
+    }
+};
+
+/**
+ * Eliminar archivo segun provider inferido por prefijo de key
+ * DELETE /api/archivos
+ * Body: key (identificador del archivo en el provider)
+ */
+export const eliminarArchivo = async (req, res) => {
+    try {
+        const { key } = req.body;
+
+        if (!key) {
+            return res.status(400).json({
+                success: false,
+                message: 'Se requiere la key del archivo'
+            });
+        }
+
+        const cleanupRefsByKey = async () => {
+            await Promise.all([
+                Tarea.updateMany(
+                    { 'archivos.key': key },
+                    { $pull: { archivos: { key } } }
+                ),
+                Proyecto.updateMany(
+                    { 'archivos.key': key },
+                    { $pull: { archivos: { key } } }
+                ),
+                ClienteIdentidad.updateMany(
+                    { 'archivos.key': key },
+                    { $pull: { archivos: { key } } }
+                )
+            ]);
+        };
+
+        // Eliminar archivo según proveedor inferido por prefijo de key.
+        if (String(key).startsWith('dropbox:')) {
+            await deleteFileFromDropbox(key);
+        } else if (String(key).startsWith('cloudinary:')) {
+            await deleteFileFromCloudinary(key);
+        } else if (String(key).startsWith('local:')) {
+            await deleteLocalFallbackFile(key);
+        } else {
+            return res.status(400).json({
+                success: false,
+                message: 'Provider no soportado para eliminación. Use key con prefijo dropbox:, cloudinary: o local:'
+            });
+        }
+
+        await cleanupRefsByKey();
+
+        res.json({
+            success: true,
+            message: 'Archivo eliminado exitosamente',
+            data: null
+        });
+
+    } catch (error) {
+        console.error('Error al eliminar archivo:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al eliminar archivo',
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Obtener archivos asociados a una tarea
+ * GET /api/archivos/tarea/:id
+ */
+export const obtenerArchivosTarea = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const tarea = await Tarea.findById(id);
+        if (!tarea) {
+            return res.status(404).json({
+                success: false,
+                message: 'Tarea no encontrada'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Archivos obtenidos exitosamente',
+            data: tarea.archivos
+        });
+
+    } catch (error) {
+        console.error('Error al obtener archivos de tarea:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener archivos',
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Obtener archivos públicos de un proyecto
+ * GET /api/archivos/proyecto/:id
+ */
+export const obtenerArchivosProyecto = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const proyecto = await Proyecto.findById(id);
+        if (!proyecto) {
+            return res.status(404).json({
+                success: false,
+                message: 'Proyecto no encontrado'
+            });
+        }
+
+        // Verificar permisos: Clientes solo ven sus propios proyectos
+        const userRole = req.admin?.rol || null;
+        const userId = req.admin?._id ? req.admin._id.toString() : null;
+
+        if (userRole === 'cliente' && proyecto.cliente.toString() !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes permiso para ver estos archivos'
+            });
+        }
+
+        res.json({
+            success: true,
+            message: 'Archivos públicos obtenidos exitosamente',
+            data: proyecto.archivosPublicos
+        });
+
+    } catch (error) {
+        console.error('Error al obtener archivos de proyecto:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error al obtener archivos',
+            error: error.message
+        });
+    }
+};

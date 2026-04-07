@@ -69,6 +69,7 @@ const materialesSchema = new mongoose.Schema({
             'cubierta',
             'estructura',
             'vistas',
+            'espesor',
             'cajones_puertas',
             'accesorios_modulo',
             'extraibles_puertas_abatibles',
@@ -105,8 +106,9 @@ const materialesSchema = new mongoose.Schema({
 });
 
 // Índices para búsquedas eficientes
-materialesSchema.index({ nombre: 1 });
 materialesSchema.index({ categoria: 1, disponible: 1 });
+materialesSchema.index({ seccion: 1, disponible: 1 });
+materialesSchema.index({ idCotizador: 1, disponible: 1 });
 
 // Método para actualizar precio y guardar historial
 materialesSchema.methods.actualizarPrecio = function(nuevoPrecio, usuarioId) {

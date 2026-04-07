@@ -17,9 +17,13 @@ const usersSchema = new mongoose.Schema({
     },
     rol:{
         type: String,
-        enum: ['admin', 'ingeniero', 'arquitecto', 'cliente'],
+        enum: ['admin', 'ingeniero', 'arquitecto', 'cliente', 'empleado', 'empleado_general'],
         required: true,
         default: 'cliente'
+    },
+    status: {
+        type: Boolean,
+        default: true
     },
     password:{
         type: String,

@@ -4,10 +4,12 @@ import { requireEmployee } from '../middlewares/roleValidator.js';
 import {
     upload,
     subirArchivo,
-    subirMultiplesArchivos,
+    subirMultiples,
     eliminarArchivo,
+    obtenerArchivosCliente,
+    obtenerArchivosPorTipo,
     obtenerArchivosTarea,
-    obtenerArchivosProyecto
+    obtenerArchivosPanel
 } from '../controllers/archivos.controller.js';
 
 const router = Router();
@@ -15,7 +17,8 @@ const router = Router();
 // ========== RUTAS DE ARCHIVOS ==========
 
 /**
- * Subir un archivo a DigitalOcean Spaces
+ * Subir un archivo (provider automatico: Cloudinary para documentos formales,
+ * Dropbox para flujo heredado y fallback local cuando aplica).
  * POST /api/archivos/upload
  * Content-Type: multipart/form-data
  * Body: 
@@ -34,7 +37,7 @@ router.post(
 );
 
 /**
- * Subir múltiples archivos a DigitalOcean Spaces
+ * Subir multiples archivos (provider automatico por tipo/ruta)
  * POST /api/archivos/upload-multiple
  * Content-Type: multipart/form-data
  * Body: 
@@ -48,44 +51,58 @@ router.post(
     '/upload-multiple',
     authRequired,
     requireEmployee,
-    upload.array('files', 10), // Máximo 10 archivos
-    subirMultiplesArchivos
+    upload.array('files', 10),
+    subirMultiples
 );
 
 /**
- * Eliminar archivo de DigitalOcean Spaces
- * DELETE /api/archivos
- * Body: { key: "ruta/del/archivo" }
- * Permisos: Admin, arquitecto, ingeniero
+ * DELETE /api/archivos/:id
+ * Eliminar archivo por ID (de ClienteArchivo)
  */
 router.delete(
-    '/',
+    '/:id',
     authRequired,
-    requireEmployee,
     eliminarArchivo
 );
 
 /**
- * Obtener archivos de una tarea
- * GET /api/archivos/tarea/:id
- * Permisos: Admin, arquitecto, ingeniero (solo sus tareas)
+ * GET /api/clientes/:clienteId/archivos
+ * Obtener archivos de un cliente (con filtro opcional por tipo)
  */
 router.get(
-    '/tarea/:id',
+    '/cliente/:clienteId',
     authRequired,
-    requireEmployee,
+    obtenerArchivosCliente
+);
+
+/**
+ * GET /api/clientes/:clienteId/archivos/:tipo
+ * Obtener archivos de un cliente por tipo específico
+ */
+router.get(
+    '/cliente/:clienteId/tipo/:tipo',
+    authRequired,
+    obtenerArchivosPorTipo
+);
+
+/**
+ * GET /api/tareas/:tareaId/archivos
+ * Obtener archivos asociados a una tarea
+ */
+router.get(
+    '/tarea/:tareaId',
+    authRequired,
     obtenerArchivosTarea
 );
 
 /**
- * Obtener archivos públicos de un proyecto
- * GET /api/archivos/proyecto/:id
- * Permisos: Todos los usuarios autenticados (con restricciones)
+ * GET /api/clientes/panel/:codigo/archivos
+ * Obtener archivos del panel del cliente (agrupados por tipo)
  */
 router.get(
-    '/proyecto/:id',
+    '/panel/:codigo',
     authRequired,
-    obtenerArchivosProyecto
+    obtenerArchivosPanel
 );
 
 export default router;

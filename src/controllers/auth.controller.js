@@ -69,7 +69,17 @@ export const subirUser = async (req, res) => {
         });
 
         const AdminSaved = await newAdmin.save();
-        res.json(AdminSaved);
+        res.status(201).json({
+            success: true,
+            message: 'Usuario creado correctamente',
+            data: {
+                id: AdminSaved._id,
+                nombre: AdminSaved.nombre,
+                correo: AdminSaved.correo,
+                telefono: AdminSaved.telefono,
+                rol: AdminSaved.rol
+            }
+        });
 
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -123,9 +133,9 @@ export const login = async (req, res) => {
 export const getUsers = async (req, res) => {
     try {
         const users = await Admin.find();
-        res.json(users);
+        res.json({ success: true, data: users });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
@@ -133,10 +143,10 @@ export const deleteUser = async (req, res) => {
     try {
         const { id } = req.params; // Asegúrate de recibir el id por params
         const user = await Admin.findByIdAndUpdate(id, { status: false }, { new: true });
-        if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
-        res.json({ message: 'Usuario desactivado correctamente', user });
+        if (!user) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+        res.json({ success: true, message: 'Usuario desactivado correctamente', data: user });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
@@ -146,12 +156,12 @@ export const getUser = async (req, res) => {
         const user = await Admin.findById(id).select('-password'); // Excluye el campo de la contraseña
 
         if (!user) {
-            return res.status(404).json({ message: 'Usuario no encontrado' });
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
         }
 
-        res.json(user);
+        res.json({ success: true, data: user });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
@@ -169,36 +179,39 @@ export const logout = (req, res) => {
 export const verifyToken = async (req, res) => {
     const { token } = req.cookies;
 
-    if (!token) return res.status(401).json({message: 'No token provided'});
+    if (!token) return res.status(401).json({ success: false, message: 'No token provided' });
 
     jwt.verify(token, TOKEN_SECRET, async (err, admin) => {
-        if (err) return res.status(401).json({message: 'Token no válido'});
+        if (err) return res.status(401).json({ success: false, message: 'Token no válido' });
         
         const adminFound = await Admin.findById(admin.id)
             .populate('citas')
             .populate('carros');
 
-        if (!adminFound) return res.status(404).json({message: 'Usuario no encontrado'});
+        if (!adminFound) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
         
         return res.json({
-            id: adminFound._id,
-            nombre: adminFound.nombre,
-            correo: adminFound.correo,
-            telefono: adminFound.telefono,
-            rol: adminFound.rol,
-            carros: adminFound.carros,
-            citas: adminFound.citas,
-            penaltyUntil: adminFound.penaltyUntil || null
+            success: true,
+            data: {
+                id: adminFound._id,
+                nombre: adminFound.nombre,
+                correo: adminFound.correo,
+                telefono: adminFound.telefono,
+                rol: adminFound.rol,
+                carros: adminFound.carros,
+                citas: adminFound.citas,
+                penaltyUntil: adminFound.penaltyUntil || null
+            }
         });
     });
 }
 
 export const perfil = async(req, res) => {
-    const adminFound = await Admin.findById(req.admin.id)
+    const adminFound = await Admin.findById(req.admin?.id)
 
-    if (!adminFound) return res.status(404).json({message: 'Usuario no encontrado'});
+    if (!adminFound) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
 
-    return res.json(adminFound);
+    return res.json({ success: true, data: adminFound });
 }
 
 export const updatePerfil = async (req, res) => {
@@ -208,8 +221,8 @@ export const updatePerfil = async (req, res) => {
         correo,
         telefono
     }, {new: true});
-    if (!adminUpdated) return res.status(404).json({message: 'Usuario no encontrado'});
-    return res.json(adminUpdated);
+    if (!adminUpdated) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+    return res.json({ success: true, data: adminUpdated });
 };
 
 /**

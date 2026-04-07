@@ -3,6 +3,77 @@ import Materiales from '../models/materiales.model.js';
 import Notificaciones from '../models/notificaciones.model.js';
 import Clientes from '../models/admin.model.js';
 import OrdenTrabajo from '../models/ordenTrabajo.model.js';
+import Tarea from '../models/tarea.model.js';
+
+const disenoToTaskEstado = (estadoDiseno) => (estadoDiseno === 'autorizado' ? 'completada' : 'pendiente');
+
+const syncTaskFromDiseno = async (diseno, req, action = 'sync_diseno') => {
+    const assignedId = diseno.arquitecto ? String(diseno.arquitecto) : null;
+    let assignedName = '';
+
+    if (assignedId) {
+        const user = await Clientes.findById(assignedId, 'nombre');
+        assignedName = user?.nombre || '';
+    }
+
+    const disenoId = String(diseno._id);
+    const existing = await Tarea.findOne({
+        $or: [
+            { sourceType: 'diseno', sourceId: disenoId },
+            { sourceDisenoId: disenoId }
+        ]
+    });
+
+    const payload = {
+        etapa: existing?.etapa && existing.etapa !== 'disenos' ? existing.etapa : 'disenos',
+        estado: disenoToTaskEstado(diseno.estado),
+        asignadoA: assignedId ? [assignedId] : [],
+        asignadoANombre: assignedName ? [assignedName] : [],
+        notas: diseno.descripcion || '',
+        prioridad: 'media',
+        designApprovedByAdmin: diseno.estado === 'autorizado',
+        sourceType: 'diseno',
+        sourceId: disenoId,
+        // Keep legacy field in sync while old records still exist.
+        sourceDisenoId: disenoId
+    };
+
+    if (existing) {
+        Object.assign(existing, payload);
+        existing.historialCambios = existing.historialCambios || [];
+        existing.historialCambios.push({
+            by: req.admin?._id ? String(req.admin._id) : null,
+            action,
+            changes: { disenoId: String(diseno._id), estadoDiseno: diseno.estado },
+            at: new Date()
+        });
+        await existing.save();
+        return existing;
+    }
+
+    const nueva = new Tarea({
+        ...payload,
+        historialCambios: [{
+            by: req.admin?._id ? String(req.admin._id) : null,
+            action: 'create_from_diseno',
+            changes: { disenoId: String(diseno._id), estadoDiseno: diseno.estado },
+            at: new Date()
+        }]
+    });
+
+    await nueva.save();
+    return nueva;
+};
+
+const removeTaskFromDiseno = async (disenoId) => {
+    const id = String(disenoId);
+    await Tarea.findOneAndDelete({
+        $or: [
+            { sourceType: 'diseno', sourceId: id },
+            { sourceDisenoId: id }
+        ]
+    });
+};
 
 // Crear diseño (admin o arquitecto)
 export const crearDiseno = async (req, res) => {
@@ -58,6 +129,7 @@ export const crearDiseno = async (req, res) => {
         });
 
         await diseno.save();
+        await syncTaskFromDiseno(diseno, req, 'create_diseno');
 
         res.status(201).json({
             message: "Diseño creado exitosamente",
@@ -186,6 +258,7 @@ export const actualizarDiseno = async (req, res) => {
 
         Object.assign(diseno, actualizaciones);
         await diseno.save();
+        await syncTaskFromDiseno(diseno, req, 'update_diseno');
 
         res.json({
             message: "Diseño actualizado exitosamente",
@@ -212,6 +285,8 @@ export const eliminarDiseno = async (req, res) => {
         if (!diseno) {
             return res.status(404).json({ message: "Diseño no encontrado" });
         }
+
+        await removeTaskFromDiseno(diseno._id);
 
         res.json({ message: "Diseño eliminado exitosamente" });
 
@@ -286,6 +361,7 @@ export const subirDisenoPreliminar = async (req, res) => {
         });
 
         await diseno.save();
+        await syncTaskFromDiseno(diseno, req, 'create_diseno_preliminar');
 
         // Vincular diseño a la orden
         orden.diseno = diseno._id;
@@ -363,6 +439,7 @@ export const autorizarDiseno = async (req, res) => {
         diseno.autorizadoPor = req.admin.id;
         diseno.fechaAutorizacion = new Date();
         await diseno.save();
+        await syncTaskFromDiseno(diseno, req, 'autorizar_diseno');
 
         // Notificar al arquitecto
         if (diseno.arquitecto) {
@@ -416,6 +493,7 @@ export const rechazarDiseno = async (req, res) => {
         diseno.estado = 'borrador';
         diseno.disponible = false;
         await diseno.save();
+        await syncTaskFromDiseno(diseno, req, 'rechazar_diseno');
 
         // Notificar al arquitecto
         if (diseno.arquitecto) {

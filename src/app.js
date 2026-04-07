@@ -19,20 +19,44 @@ import pagosRoutes from './routes/pagos.routes.js';
 import tareasRoutes from './routes/tareas.routes.js';
 import proyectosRoutes from './routes/proyectos.routes.js';
 import archivosRoutes from './routes/archivos.routes.js';
+import uploadsCompatRoutes from './routes/uploads.compat.routes.js';
 import kanbanRoutes from './routes/kanban.routes.js';
+import workflowRoutes from './routes/workflow.routes.js';
+import seguimientoRoutes from './routes/seguimiento.routes.js';
+import clientesRoutes from './routes/clientes.routes.js';
+import { startFollowUpCron } from './services/followUpCron.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const app = express();
+const DEV_ALLOWED_ORIGINS = new Set([
+    'http://localhost:5173',
+    'http://localhost:3000'
+]);
+
+const isAllowedOrigin = (origin) => {
+    if (!origin) return true;
+    if (DEV_ALLOWED_ORIGINS.has(origin)) return true;
+
+    try {
+        const parsed = new URL(origin);
+        const isLocalHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        return isLocalHost;
+    } catch {
+        return false;
+    }
+};
 
 app.use(morgan('dev'));
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    origin: (origin, callback) => {
+        if (isAllowedOrigin(origin)) return callback(null, true);
+        return callback(new Error(`Origin no permitido por CORS: ${origin}`));
+    },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'x-public-tracking', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
     exposedHeaders: ['Content-Length', 'X-Ku%C3%BCche-Trace']
 }));
 app.use(express.json());
@@ -63,7 +87,10 @@ app.get('/', (req, res) => {
             pagos: '/api/pagos',
             tareas: '/api/tareas',
             proyectos: '/api/proyectos',
-            archivos: '/api/archivos'
+            clientes: '/api/clientes',
+            seguimiento: '/api/seguimiento',
+            archivos: '/api/archivos',
+            upload: '/api/uploads'
         }
     });
 });
@@ -76,6 +103,8 @@ app.use('/api/dias', diasRoutes);
 app.use('/api/cotizaciones', cotizacionesRoutes);
 app.use('/api/levantamientos', levantamientosRoutes);
 app.use('/api/catalogos', catalogosRoutes);
+// Alias: soportar rutas antiguas/fallbacks que el frontend intenta
+app.use('/api/catalogo', catalogosRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/empleados', usuariosRoutes); // Alias para empleados
 app.use('/api/materiales', materialesRoutes);
@@ -84,8 +113,14 @@ app.use('/api/ordenes', ordenTrabajoRoutes);
 app.use('/api/pagos', pagosRoutes);
 app.use('/api/tareas', tareasRoutes);
 app.use('/api/proyectos', proyectosRoutes);
+app.use('/api/clientes', clientesRoutes);
+app.use('/api/seguimiento', seguimientoRoutes);
 app.use('/api/archivos', archivosRoutes);
+app.use('/api', uploadsCompatRoutes);
 app.use('/api/kanban', kanbanRoutes);
+app.use('/api/workflow', workflowRoutes);
+import herrajesRoutes from './routes/herrajes.routes.js';
+app.use('/api/herrajes', herrajesRoutes);
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
@@ -99,5 +134,12 @@ app.use((err, req, res, next) => {
         }
     });
 });
+
+// Initialize follow-up auto-inactivate cron job
+try {
+    startFollowUpCron();
+} catch (err) {
+    console.error('⚠️  Failed to start follow-up cron job:', err.message);
+}
 
 export default app;

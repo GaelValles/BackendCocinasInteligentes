@@ -45,7 +45,7 @@ export const requireStaff = requireRole('admin', 'arquitecto');
 /**
  * Middleware para verificar que el usuario sea admin, arquitecto o ingeniero
  */
-export const requireEmployee = requireRole('admin', 'arquitecto', 'ingeniero');
+export const requireEmployee = requireRole('admin', 'arquitecto', 'ingeniero', 'empleado', 'empleado_general', 'staff');
 
 /**
  * Verificar si el usuario actual es el propietario del recurso o tiene permisos de admin/arquitecto

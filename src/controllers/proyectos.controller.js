@@ -1,9 +1,15 @@
+import { uploadFileToDropbox } from '../libs/dropbox.js';
+import { uploadFileToCloudinary } from '../libs/cloudinary.js';
  
 import mongoose from 'mongoose';
 import Proyecto from '../models/proyecto.model.js';
 import Admin from '../models/admin.model.js';
 import Cotizacion from '../models/cotizacion.model.js';
 import Levantamiento from '../models/levantamiento.model.js';
+import {
+    upsertTrackingAccessFromProyecto,
+    disableTrackingAccessByProjectId
+} from '../services/trackingAccess.service.js';
 
 /**
  * Obtener todos los proyectos (con filtros opcionales)
@@ -50,6 +56,8 @@ export const obtenerProyectos = async (req, res) => {
             _id: proyecto._id,
             nombre: proyecto.nombre,
             cliente: proyecto.cliente._id,
+            clienteRef: proyecto.clienteRef || null,
+            clienteId: proyecto.clienteId || '',
             nombreCliente: proyecto.cliente.nombre,
             tipo: proyecto.tipo,
             estado: proyecto.estado,
@@ -128,6 +136,8 @@ export const obtenerProyecto = async (req, res) => {
             _id: proyecto._id,
             nombre: proyecto.nombre,
             cliente: proyecto.cliente._id,
+            clienteRef: proyecto.clienteRef || null,
+            clienteId: proyecto.clienteId || '',
             nombreCliente: proyecto.cliente.nombre,
             correoCliente: proyecto.cliente.correo,
             telefonoCliente: proyecto.cliente.telefono,
@@ -226,6 +236,7 @@ export const crearProyecto = async (req, res) => {
         });
 
         await nuevoProyecto.save();
+        await upsertTrackingAccessFromProyecto(nuevoProyecto._id);
 
         // Poblar referencias
         await nuevoProyecto.populate('cliente', 'nombre correo telefono');
@@ -236,6 +247,8 @@ export const crearProyecto = async (req, res) => {
             _id: nuevoProyecto._id,
             nombre: nuevoProyecto.nombre,
             cliente: nuevoProyecto.cliente._id,
+            clienteRef: nuevoProyecto.clienteRef || null,
+            clienteId: nuevoProyecto.clienteId || '',
             nombreCliente: nuevoProyecto.cliente.nombre,
             tipo: nuevoProyecto.tipo,
             estado: nuevoProyecto.estado,
@@ -335,6 +348,7 @@ export const actualizarProyecto = async (req, res) => {
         });
 
         await proyecto.save();
+        await upsertTrackingAccessFromProyecto(proyecto._id);
 
         // Poblar referencias
         await proyecto.populate('cliente', 'nombre correo telefono');
@@ -345,6 +359,8 @@ export const actualizarProyecto = async (req, res) => {
             _id: proyecto._id,
             nombre: proyecto.nombre,
             cliente: proyecto.cliente._id,
+            clienteRef: proyecto.clienteRef || null,
+            clienteId: proyecto.clienteId || '',
             nombreCliente: proyecto.cliente.nombre,
             tipo: proyecto.tipo,
             estado: proyecto.estado,
@@ -620,6 +636,8 @@ export const eliminarProyecto = async (req, res) => {
             });
         }
 
+        await disableTrackingAccessByProjectId(proyecto._id);
+
         res.json({
             success: true,
             message: 'Proyecto eliminado exitosamente',
@@ -645,6 +663,51 @@ export const agregarArchivoPublico = async (req, res) => {
     try {
         const { id } = req.params;
 
+        const normalizeTextToken = (value = '') => String(value || '')
+            .trim()
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+
+        const shouldUseDropboxForDesign = (file, tipo = '') => {
+            const name = normalizeTextToken(file?.originalname || '');
+            const tipoNorm = normalizeTextToken(tipo).replace(/[\s-]+/g, '_');
+            const isFormalDoc = ['cotizacion_formal', 'hoja_taller', 'levantamiento_detallado', 'recibo', 'contrato'].some((token) => tipoNorm.includes(token));
+            if (isFormalDoc) return false;
+
+            const hasSkp = name.endsWith('.skp');
+            const designType = tipoNorm.includes('diseno')
+                || tipoNorm.includes('render')
+                || tipoNorm.includes('sketchup')
+                || tipoNorm.includes('modelo_3d')
+                || tipoNorm.includes('modelo3d');
+            const designName = name.includes('diseno') || name.includes('diseño') || name.includes('render');
+            return hasSkp || designType || designName;
+        };
+
+        const getNormalizedProjectFileType = (requestedType = '', originalName = '') => {
+            const allowedTypeTokens = new Set([
+                'jpg',
+                'jpeg',
+                'png',
+                'pdf',
+                'webp',
+                'cotizacion_formal',
+                'hoja_taller',
+                'levantamiento_detallado',
+                'recibo',
+                'contrato',
+                'otro'
+            ]);
+
+            const requested = normalizeTextToken(requestedType).replace(/[\s-]+/g, '_');
+            const extension = String(originalName || '').split('.').pop()?.toLowerCase() || '';
+
+            if (allowedTypeTokens.has(requested)) return requested;
+            if (allowedTypeTokens.has(extension)) return extension;
+            return 'otro';
+        };
+
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: 'ID de proyecto inválido' });
         }
@@ -654,15 +717,24 @@ export const agregarArchivoPublico = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
         }
 
-        // If a file was uploaded via multer, add it
+        // If a file was uploaded via multer, persist using remote provider.
         if (req.file) {
-            const fileUrl = `/uploads/projects/${req.file.filename}`;
+            const tipo = getNormalizedProjectFileType(req.body?.tipo, req.file?.originalname);
+
+            let uploadResult;
+            if (shouldUseDropboxForDesign(req.file, tipo)) {
+                uploadResult = await uploadFileToDropbox(req.file.buffer, req.file.originalname, 'proyectos');
+            } else {
+                uploadResult = await uploadFileToCloudinary(req.file.buffer, req.file.originalname, req.file.mimetype, 'proyectos');
+            }
+
             proyecto.archivosPublicos.push({
                 nombre: req.file.originalname,
-                tipo: req.file.mimetype,
-                url: fileUrl,
+                tipo,
+                url: uploadResult.url,
                 createdAt: new Date()
             });
+
             await proyecto.save();
 
             return res.json({

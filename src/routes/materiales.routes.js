@@ -23,4 +23,11 @@ router.get('/verMaterial/:id', authRequired, obtenerMaterial);
 router.put('/actualizarMaterial/:id', authRequired, actualizarMaterial);
 router.delete('/eliminarMaterial/:id', authRequired, eliminarMaterial);
 
+// Canonical/fallback routes used by frontend integrations.
+router.get('/', obtenerMateriales);
+router.get('/:id', obtenerMaterial);
+router.post('/', authRequired, crearMaterial);
+router.patch('/:id', authRequired, actualizarMaterial);
+router.delete('/:id', authRequired, eliminarMaterial);
+
 export default router;

@@ -37,11 +37,14 @@ export const getCotizadorConfig = async (req, res) => {
         }));
 
         res.json({
-            projectTypes: config.projectTypes,
-            baseMaterials,
-            scenarioCards: config.scenarioCards,
-            materialColors: config.materialColors,
-            hardwareCatalog
+            success: true,
+            data: {
+                projectTypes: config.projectTypes,
+                baseMaterials,
+                scenarioCards: config.scenarioCards,
+                materialColors: config.materialColors,
+                hardwareCatalog
+            }
         });
     } catch (error) {
         console.error('Error al obtener configuración:', error);

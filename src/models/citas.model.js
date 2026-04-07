@@ -1,5 +1,6 @@
 import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
+import { resolveOrCreateClienteIdentidad } from '../services/clienteIdentidad.service.js';
 
 const citasSchema = new mongoose.Schema({
     // Fecha en que se agendó la cita
@@ -35,6 +36,27 @@ const citasSchema = new mongoose.Schema({
         type: String,
         required: true,
         trim: true
+    },
+    correoNormalizado: {
+        type: String,
+        default: null,
+        index: true
+    },
+    telefonoNormalizado: {
+        type: String,
+        default: null,
+        index: true
+    },
+    clienteRef: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ClienteIdentidad',
+        default: null,
+        index: true
+    },
+    clienteId: {
+        type: String,
+        default: '',
+        index: true
     },
     ubicacion: {
         type: String,
@@ -90,6 +112,32 @@ citasSchema.add({
 // Índices para búsquedas eficientes
 citasSchema.index({ correoCliente: 1, fechaAgendada: 1 });
 citasSchema.index({ estado: 1, fechaAgendada: 1 });
+
+citasSchema.pre('save', async function preSaveClienteIdentity(next) {
+    try {
+        const correoNormalizado = String(this.correoCliente || '').trim().toLowerCase();
+        const telefonoNormalizado = String(this.telefonoCliente || '').replace(/\D/g, '').trim();
+
+        this.correoCliente = correoNormalizado;
+        this.correoNormalizado = correoNormalizado || null;
+        this.telefonoNormalizado = telefonoNormalizado || null;
+
+        const clienteIdentidad = await resolveOrCreateClienteIdentidad({
+            nombre: this.nombreCliente,
+            correo: this.correoCliente,
+            telefono: this.telefonoCliente
+        });
+
+        if (clienteIdentidad) {
+            this.clienteRef = clienteIdentidad._id;
+            this.clienteId = clienteIdentidad.codigo;
+        }
+
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
 
 const CitasModel = connectDBClientes.models && connectDBClientes.models.Citas
     ? connectDBClientes.model('Citas')

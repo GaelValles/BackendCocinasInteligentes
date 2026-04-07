@@ -9,7 +9,7 @@ const archivoPublicoSchema = new mongoose.Schema({
     },
     tipo: {
         type: String,
-        enum: ['jpg', 'pdf', 'png'],
+        enum: ['jpg', 'jpeg', 'pdf', 'png', 'webp', 'cotizacion_formal', 'hoja_taller', 'levantamiento_detallado', 'recibo', 'contrato', 'otro'],
         required: true
     },
     url: {
@@ -38,6 +38,15 @@ const proyectoSchema = new mongoose.Schema({
         type: String,
         trim: true
     },
+    clienteRef: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ClienteIdentidad',
+        default: null
+    },
+    clienteId: {
+        type: String,
+        default: ''
+    },
     tipo: {
         type: String,
         enum: ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'],
@@ -55,6 +64,18 @@ const proyectoSchema = new mongoose.Schema({
     },
     pasosPosibles: [{
         type: String
+    }],
+    // Archivos privados (backend audit trail)
+    archivos: [{
+        id: String,
+        nombre: String,
+        tipo: String,
+        url: { type: String, default: '' },
+        key: { type: String, default: '' },
+        provider: { type: String, enum: ['dropbox', 'cloudinary', 'local'], default: 'local' },
+        mimeType: { type: String, default: '' },
+        clienteId: { type: String, default: '' },
+        createdAt: { type: Date, default: Date.now }
     }],
     // Archivos públicos visibles al cliente
     archivosPublicos: [archivoPublicoSchema],
@@ -94,6 +115,8 @@ const proyectoSchema = new mongoose.Schema({
 
 // Índices para mejorar el rendimiento
 proyectoSchema.index({ cliente: 1 });
+proyectoSchema.index({ clienteRef: 1 });
+proyectoSchema.index({ clienteId: 1 });
 proyectoSchema.index({ estado: 1 });
 proyectoSchema.index({ empleadoAsignado: 1 });
 

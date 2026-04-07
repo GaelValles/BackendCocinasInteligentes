@@ -79,9 +79,9 @@ export const crearOrdenTrabajo = async (req, res) => {
         }
 
         res.status(201).json({
-            message: "Orden de trabajo creada exitosamente",
-            numeroSeguimiento,
-            ordenTrabajo
+            success: true,
+            message: 'Orden de trabajo creada exitosamente',
+            data: { numeroSeguimiento, ordenTrabajo }
         });
 
     } catch (error) {
@@ -104,7 +104,7 @@ export const obtenerOrdenesTrabajo = async (req, res) => {
             .populate('cita')
             .sort({ createdAt: -1 });
 
-        res.json(ordenes);
+        res.json({ success: true, data: ordenes });
 
     } catch (error) {
         console.error(error);
@@ -136,7 +136,7 @@ export const obtenerOrdenTrabajo = async (req, res) => {
             return res.status(403).json({ message: "No tienes permisos para ver esta orden" });
         }
 
-        res.json(orden);
+        res.json({ success: true, data: orden });
 
     } catch (error) {
         console.error(error);
@@ -185,7 +185,7 @@ export const obtenerProgresoPorCorreo = async (req, res) => {
             })) || []
         };
 
-        res.json(respuesta);
+        res.json({ success: true, data: respuesta });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Error al consultar progreso", error: error.message });
@@ -230,7 +230,7 @@ export const obtenerOrdenPorNumeroSeguimiento = async (req, res) => {
             }))
         };
 
-        res.json(respuestaPublica);
+        res.json({ success: true, data: respuestaPublica });
 
     } catch (error) {
         console.error(error);
@@ -265,10 +265,7 @@ export const actualizarEstadoOrden = async (req, res) => {
         // Crear notificación de cambio de estado
         await Notificaciones.notificarCambioEstadoOrden(orden, nuevoEstado);
 
-        res.json({
-            message: "Estado actualizado exitosamente",
-            orden
-        });
+        res.json({ success: true, message: 'Estado actualizado exitosamente', data: orden });
 
     } catch (error) {
         console.error(error);
@@ -314,10 +311,7 @@ export const asignarIngeniero = async (req, res) => {
             prioridad: 'alta'
         });
 
-        res.json({
-            message: "Ingeniero asignado exitosamente",
-            orden
-        });
+        res.json({ success: true, message: 'Ingeniero asignado exitosamente', data: orden });
 
     } catch (error) {
         console.error(error);
@@ -357,10 +351,7 @@ export const agregarEvidencia = async (req, res) => {
 
         await orden.save();
 
-        res.json({
-            message: "Evidencia agregada exitosamente",
-            orden
-        });
+        res.json({ success: true, message: 'Evidencia agregada exitosamente', data: orden });
 
     } catch (error) {
         console.error(error);
@@ -383,7 +374,7 @@ export const obtenerOrdenesPorIngeniero = async (req, res) => {
             .populate('cita')
             .sort({ createdAt: -1 });
 
-        res.json(ordenes);
+        res.json({ success: true, data: ordenes });
 
     } catch (error) {
         console.error(error);
@@ -403,7 +394,7 @@ export const obtenerOrdenesPendientesDiseno = async (req, res) => {
             .populate('cita')
             .sort({ createdAt: -1 });
 
-        res.json(ordenes);
+        res.json({ success: true, data: ordenes });
 
     } catch (error) {
         console.error(error);
@@ -436,10 +427,7 @@ export const finalizarOrden = async (req, res) => {
 
         // Notificación se crea automáticamente en cambiarEstado
 
-        res.json({
-            message: "Orden finalizada exitosamente",
-            orden
-        });
+        res.json({ success: true, message: 'Orden finalizada exitosamente', data: orden });
 
     } catch (error) {
         console.error(error);

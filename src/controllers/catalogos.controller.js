@@ -7,19 +7,32 @@ import Admin from '../models/admin.model.js';
  */
 export const obtenerMateriales = async (req, res) => {
     try {
-        const materiales = await Materiales.find({ 
-            disponible: true,
-            idCotizador: { $in: ['melamina', 'mdf', 'tech'] }
-        }).select('idCotizador nombre precioPorMetro precioUnitario descripcion disponible');
+        const { base } = req.query;
 
-        // Mapear a la estructura que espera el frontend
+        let filtro = { disponible: true };
+        // Compat: si el frontend solicita solo materiales base (cotizador), usar idCotizador filter
+        if (base === 'true') {
+            filtro.idCotizador = { $in: ['melamina', 'mdf', 'tech'] };
+        }
+
+        const materiales = await Materiales.find(filtro)
+            .select('idCotizador nombre precioPorMetro precioUnitario descripcion disponible categoria seccion proveedor');
+
+        // Mapear a la estructura que espera el frontend (más completa)
         const mapped = materiales.map(m => ({
             _id: m._id,
             id: m.idCotizador || String(m._id),
+            idCotizador: m.idCotizador || null,
             nombre: m.nombre,
-            precioMetroLineal: m.precioPorMetro || null,
+            unidadMedida: m.unidadMedida || 'unidad',
+            precioUnitario: m.precioUnitario ?? null,
+            precioPorMetro: m.precioPorMetro ?? null,
+            precioMetroLineal: m.precioPorMetro ?? null,
             descripcion: m.descripcion || '',
-            activo: !!m.disponible
+            categoria: m.categoria || '',
+            seccion: m.seccion || null,
+            proveedor: m.proveedor || '',
+            disponible: !!m.disponible
         }));
 
         res.status(200).json({ success: true, data: mapped });
@@ -34,19 +47,28 @@ export const obtenerMateriales = async (req, res) => {
  */
 export const obtenerHerrajes = async (req, res) => {
     try {
+        // Obtener por categoria Herrajes o por idCotizador conocido
+        const herrajeIds = ['correderas', 'bisagras', 'jaladeras', 'bote', 'iluminacion'];
         const herrajes = await Materiales.find({ 
             disponible: true,
-            idCotizador: { $in: ['correderas', 'bisagras', 'jaladeras', 'bote', 'iluminacion'] }
-        }).select('idCotizador nombre precioUnitario descripcion categoria disponible');
+            $or: [
+                { categoria: 'Herrajes' },
+                { idCotizador: { $in: herrajeIds } }
+            ]
+        }).select('idCotizador nombre unidadMedida precioUnitario descripcion categoria seccion disponible proveedor');
 
         const mapped = herrajes.map(h => ({
             _id: h._id,
             id: h.idCotizador || String(h._id),
+            idCotizador: h.idCotizador || null,
             nombre: h.nombre,
-            precioUnitario: h.precioUnitario || null,
+            unidadMedida: h.unidadMedida || 'unidad',
+            precioUnitario: h.precioUnitario ?? null,
             descripcion: h.descripcion || '',
             categoria: h.categoria || '',
-            activo: !!h.disponible
+            seccion: h.seccion || null,
+            proveedor: h.proveedor || '',
+            disponible: !!h.disponible
         }));
 
         res.status(200).json({ success: true, data: mapped });

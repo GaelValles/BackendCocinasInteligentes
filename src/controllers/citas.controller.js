@@ -4,6 +4,92 @@ import Citas from "../models/citas.model.js";
 import Admin from "../models/admin.model.js";
 import OrdenTrabajo from "../models/ordenTrabajo.model.js";
 import Notificaciones from "../models/notificaciones.model.js";
+import Tarea from '../models/tarea.model.js';
+import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
+
+const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'empleado_general', 'staff'];
+const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
+
+const citaToTaskEstado = (estadoCita) => (estadoCita === 'completada' ? 'completada' : 'pendiente');
+
+const buildCitaPayload = (cita) => ({
+    fechaAgendada: cita.fechaAgendada || null,
+    nombreCliente: cita.nombreCliente || '',
+    correoCliente: cita.correoCliente || '',
+    telefonoCliente: cita.telefonoCliente || '',
+    ubicacion: cita.ubicacion || '',
+    informacionAdicional: cita.informacionAdicional || ''
+});
+
+const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
+    const assignedId = cita.ingenieroAsignado ? String(cita.ingenieroAsignado) : null;
+    let assignedName = '';
+
+    if (assignedId && mongoose.Types.ObjectId.isValid(assignedId)) {
+        const user = await Admin.findById(assignedId, 'nombre');
+        assignedName = user?.nombre || '';
+    }
+
+    const citaId = String(cita._id);
+    const existing = await Tarea.findOne({
+        $or: [
+            { sourceType: 'cita', sourceId: citaId },
+            { sourceCitaId: citaId }
+        ]
+    });
+
+    const payload = {
+        etapa: existing?.etapa && existing.etapa !== 'citas' ? existing.etapa : 'citas',
+        estado: citaToTaskEstado(cita.estado),
+        asignadoA: assignedId ? [assignedId] : [],
+        asignadoANombre: assignedName ? [assignedName] : [],
+        nombreProyecto: '',
+        proyectoId: null,
+        notas: cita.informacionAdicional || cita.especificacionesInicio?.especificaciones || '',
+        prioridad: 'media',
+        citaStarted: ['en_proceso', 'completada'].includes(cita.estado),
+        citaFinished: cita.estado === 'completada',
+        sourceType: 'cita',
+        sourceId: citaId,
+        cita: buildCitaPayload(cita),
+        // Keep legacy field in sync while old records still exist.
+        sourceCitaId: citaId
+    };
+
+    if (existing) {
+        Object.assign(existing, payload);
+        existing.historialCambios = existing.historialCambios || [];
+        existing.historialCambios.push({
+            by: req.admin?._id ? String(req.admin._id) : null,
+            action,
+            changes: { citaId: String(cita._id), estadoCita: cita.estado },
+            at: new Date()
+        });
+        await existing.save();
+        await upsertTrackingAccessFromTarea(existing);
+        return existing;
+    }
+
+    const nueva = new Tarea({ ...payload, historialCambios: [{
+        by: req.admin?._id ? String(req.admin._id) : null,
+        action: 'create_from_cita',
+        changes: { citaId: String(cita._id), estadoCita: cita.estado },
+        at: new Date()
+    }] });
+    await nueva.save();
+    await upsertTrackingAccessFromTarea(nueva);
+    return nueva;
+};
+
+const removeTaskFromCita = async (citaId) => {
+    const id = String(citaId);
+    await Tarea.findOneAndDelete({
+        $or: [
+            { sourceType: 'cita', sourceId: id },
+            { sourceCitaId: id }
+        ]
+    });
+};
 
 // Crear cita (ruta pública, no requiere autenticación)
 export const crearCita = async (req, res) => {
@@ -134,6 +220,8 @@ export const crearCita = async (req, res) => {
         .populate('diseno', 'nombre descripcion imagenes');
     }
 
+        await syncTaskFromCita(citaGuardada, req, 'create_cita');
+
         return res.status(201).json({
             success: true,
             data: citaCompleta,
@@ -185,9 +273,9 @@ export const asignarIngenieroCita = async (req, res) => {
         return res.status(404).json({ message: "Ingeniero no encontrado" });
       }
 
-      if (ingeniero.rol !== 'ingeniero' && ingeniero.rol !== 'arquitecto') {
+            if (!ROLES_ASIGNABLES.includes(ingeniero.rol)) {
         return res.status(400).json({ 
-          message: "El usuario debe tener rol de ingeniero o arquitecto",
+                    message: "El usuario no tiene un rol asignable",
           rolEncontrado: ingeniero.rol 
         });
       }
@@ -225,6 +313,8 @@ export const asignarIngenieroCita = async (req, res) => {
         const citaPopulated = await Citas.findById(id)
             .populate('ingenieroAsignado', 'nombre correo telefono rol');
 
+        await syncTaskFromCita(citaPopulated, req, 'assign_ingeniero_cita');
+
         return res.json({ success: true, data: { message: ingenieroId ? 'Trabajador asignado correctamente' : 'Asignación de ingeniero removida', cita: citaPopulated } });
   } catch (error) {
         console.error('Error en asignarIngenieroCita:', error);
@@ -255,6 +345,8 @@ export const cancelarCita = async (req, res) => {
     } catch (e) {
         console.error('Error al push historial en cancelarCita', e);
     }
+
+    await syncTaskFromCita(cita, req, 'cancel_cita');
 
     return res.status(200).json({ success: true, data: { message: 'Cita cancelada exitosamente', cita } });
   } catch (error) {
@@ -326,6 +418,8 @@ export const actualizarCita = async (req, res) => {
         await cita.save();
         await cita.populate({ path: 'diseno', select: 'nombre descripcion imagenes' });
 
+        await syncTaskFromCita(cita, req, 'update_cita');
+
         res.json({ success: true, data: cita });
     } catch (error) {
         console.error('Error en actualizarCita:', error);
@@ -340,6 +434,7 @@ export const eliminarCita = async (req, res) => {
         const cita = await Citas.findById(id);
         if (!cita) return res.status(404).json({ message: "Cita no encontrada" });
 
+        await removeTaskFromCita(cita._id);
         await Citas.findByIdAndDelete(id);
 
         res.json({ success: true, data: { message: 'Cita eliminada correctamente' } });
@@ -379,7 +474,7 @@ export const obtenerCita = async (req, res) => {
         if (!cita) return res.status(404).json({ success: false, message: 'Cita no encontrada' });
         
         // Si es ingeniero o arquitecto, solo puede ver sus citas asignadas
-        if (req.admin && (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto')) {
+        if (req.admin && ROLES_OPERATIVOS.includes(req.admin.rol)) {
             if (!cita.ingenieroAsignado || cita.ingenieroAsignado._id.toString() !== req.admin.id.toString()) {
                 return res.status(403).json({ success: false, message: 'No tienes permiso para ver esta cita' });
             }
@@ -423,7 +518,7 @@ export const iniciarCita = async (req, res) => {
         const { medidas, estilo, especificaciones, materialesPreferidos } = req.body || {};
 
         // Verificar que sea admin o ingeniero
-        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto') {
+        if (req.admin && req.admin.rol !== 'admin' && !ROLES_OPERATIVOS.includes(req.admin.rol)) {
             return res.status(403).json({ message: "No tienes permisos para iniciar citas" });
         }
 
@@ -433,7 +528,7 @@ export const iniciarCita = async (req, res) => {
         }
 
         // Si es ingeniero o arquitecto, solo puede iniciar sus citas asignadas
-        if (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto') {
+        if (ROLES_OPERATIVOS.includes(req.admin.rol)) {
             if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
                 return res.status(403).json({ message: "Solo puedes iniciar las citas asignadas a ti" });
             }
@@ -461,6 +556,8 @@ export const iniciarCita = async (req, res) => {
 
         await cita.save();
 
+        await syncTaskFromCita(cita, req, 'start_cita');
+
         // Poblar diseño e ingeniero para respuesta
         await cita.populate([
             { path: 'diseno', select: 'nombre descripcion imagenes' },
@@ -482,7 +579,7 @@ export const finalizarCita = async (req, res) => {
         const { ingenieroId, fechaEstimadaFinalizacion, notasInternas } = req.body;
 
         // Verificar que sea admin o ingeniero
-        if (req.admin && req.admin.rol !== 'admin' && req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto') {
+        if (req.admin && req.admin.rol !== 'admin' && !ROLES_OPERATIVOS.includes(req.admin.rol)) {
             return res.status(403).json({ message: "No tienes permisos para finalizar citas" });
         }
 
@@ -492,7 +589,7 @@ export const finalizarCita = async (req, res) => {
         }
 
         // Si es ingeniero o arquitecto, solo puede finalizar sus citas asignadas
-        if (req.admin.rol === 'ingeniero' || req.admin.rol === 'arquitecto') {
+        if (ROLES_OPERATIVOS.includes(req.admin.rol)) {
             if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
                 return res.status(403).json({ message: "Solo puedes finalizar las citas asignadas a ti" });
             }
@@ -515,6 +612,8 @@ export const finalizarCita = async (req, res) => {
         }
 
         await cita.save();
+
+        await syncTaskFromCita(cita, req, 'finish_cita');
 
         // Generar número de seguimiento único
         const numeroSeguimiento = crypto.randomBytes(4).toString('hex').toUpperCase();
@@ -586,8 +685,8 @@ export const finalizarCita = async (req, res) => {
 export const obtenerCitasIngeniero = async (req, res) => {
     try {
         // Verificar que sea ingeniero o arquitecto
-        if (!req.admin || (req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto')) {
-            return res.status(403).json({ message: "Solo ingenieros pueden acceder a esta ruta" });
+        if (!req.admin || !ROLES_OPERATIVOS.includes(req.admin.rol)) {
+            return res.status(403).json({ message: "Solo personal operativo puede acceder a esta ruta" });
         }
 
         // Buscar citas asignadas al ingeniero
@@ -614,8 +713,8 @@ export const actualizarEspecificaciones = async (req, res) => {
         const { medidas, estilo, especificaciones, materialesPreferidos } = req.body || {};
 
         // Verificar que sea ingeniero o arquitecto
-        if (!req.admin || (req.admin.rol !== 'ingeniero' && req.admin.rol !== 'arquitecto')) {
-            return res.status(403).json({ message: "Solo ingenieros pueden actualizar especificaciones" });
+        if (!req.admin || !ROLES_OPERATIVOS.includes(req.admin.rol)) {
+            return res.status(403).json({ message: "Solo personal operativo puede actualizar especificaciones" });
         }
 
         const cita = await Citas.findById(id);
