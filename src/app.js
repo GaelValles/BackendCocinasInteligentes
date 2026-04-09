@@ -24,6 +24,7 @@ import kanbanRoutes from './routes/kanban.routes.js';
 import workflowRoutes from './routes/workflow.routes.js';
 import seguimientoRoutes from './routes/seguimiento.routes.js';
 import clientesRoutes from './routes/clientes.routes.js';
+import cronRoutes from './routes/cron.routes.js';
 import { startFollowUpCron } from './services/followUpCron.js';
 import dotenv from 'dotenv';
 
@@ -35,13 +36,43 @@ const DEV_ALLOWED_ORIGINS = new Set([
     'http://localhost:3000'
 ]);
 
+const parseAllowedOrigins = () => {
+    const values = [
+        process.env.CORS_ALLOWED_ORIGINS,
+        process.env.FRONTEND_URL,
+        process.env.FRONTEND_PUBLIC_URL,
+        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined
+    ]
+        .filter(Boolean)
+        .flatMap((item) => String(item).split(','))
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+    return new Set(values);
+};
+
+const PROD_ALLOWED_ORIGINS = parseAllowedOrigins();
+const allowAllOrigins = process.env.CORS_ALLOW_ALL === 'true';
+
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    next();
+});
+
 const isAllowedOrigin = (origin) => {
+    if (allowAllOrigins) return true;
     if (!origin) return true;
     if (DEV_ALLOWED_ORIGINS.has(origin)) return true;
+    if (PROD_ALLOWED_ORIGINS.has(origin)) return true;
 
     try {
         const parsed = new URL(origin);
         const isLocalHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        if (process.env.NODE_ENV === 'production') return false;
         return isLocalHost;
     } catch {
         return false;
@@ -116,6 +147,7 @@ app.use('/api/proyectos', proyectosRoutes);
 app.use('/api/clientes', clientesRoutes);
 app.use('/api/seguimiento', seguimientoRoutes);
 app.use('/api/archivos', archivosRoutes);
+app.use('/api/cron', cronRoutes);
 app.use('/api', uploadsCompatRoutes);
 app.use('/api/kanban', kanbanRoutes);
 app.use('/api/workflow', workflowRoutes);
@@ -136,10 +168,12 @@ app.use((err, req, res, next) => {
 });
 
 // Initialize follow-up auto-inactivate cron job
-try {
-    startFollowUpCron();
-} catch (err) {
-    console.error('⚠️  Failed to start follow-up cron job:', err.message);
+if (!process.env.VERCEL && process.env.ENABLE_FOLLOWUP_CRON !== 'false') {
+    try {
+        startFollowUpCron();
+    } catch (err) {
+        console.error('⚠️  Failed to start follow-up cron job:', err.message);
+    }
 }
 
 export default app;

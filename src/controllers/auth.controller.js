@@ -4,6 +4,17 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import {createAccessToken} from "../libs/jwt.js";
 
+const authCookieOptions = () => {
+    const isProduction = process.env.NODE_ENV === 'production';
+    return {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax',
+        path: '/',
+        maxAge: 24 * 60 * 60 * 1000
+    };
+};
+
 export const register = async (req, res) => {
     const {nombre, correo, telefono, rol, password} = req.body;
     try {
@@ -26,10 +37,7 @@ export const register = async (req, res) => {
         const AdminSaved = await newAdmin.save();
         const token = await createAccessToken({id: AdminSaved._id})
         
-        res.cookie('token', token, {
-            samesite: 'none',
-            secure: true,
-        })
+        res.cookie('token', token, authCookieOptions());
         res.json({
             success: true,
             message: 'Usuario creado correctamente',
@@ -105,7 +113,7 @@ export const login = async (req, res) => {
 
     const token = await createAccessToken({id: AdminFound._id,})
     
-    res.cookie('token',token)
+    res.cookie('token', token, authCookieOptions());
     res.json({
         success: true,
         message: 'Login exitoso',
@@ -167,8 +175,12 @@ export const getUser = async (req, res) => {
 
 
 export const logout = (req, res) => {
-    res.cookie("token", "",{
-        expires: new Date(0)
+    const cookieOptions = authCookieOptions();
+    res.clearCookie('token', {
+        httpOnly: cookieOptions.httpOnly,
+        secure: cookieOptions.secure,
+        sameSite: cookieOptions.sameSite,
+        path: '/'
     });
     return res.status(200).json({
         success: true,

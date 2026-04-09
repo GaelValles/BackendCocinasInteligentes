@@ -13,8 +13,6 @@ export const authRequired = async (req, res, next) => {
                 token = authHeader.substring(7);
             }
         }
-        
-        console.log("Token:", token);
 
         if (!token) {
             return res.status(401).json({ 
@@ -31,9 +29,7 @@ export const authRequired = async (req, res, next) => {
                     message: 'Invalid token' 
                 });
             }
-            
-            console.log("Decoded token:", decoded);
-            
+
             // Buscar el usuario completo en la base de datos
             const admin = await Admin.findById(decoded.id);
             
@@ -46,9 +42,7 @@ export const authRequired = async (req, res, next) => {
             
             // Guardar el usuario completo en req.admin
             req.admin = admin;
-            
-            console.log("Usuario autenticado:", { id: admin._id, rol: admin.rol, nombre: admin.nombre });
-            
+
             next();
         });
     } catch (error) {
