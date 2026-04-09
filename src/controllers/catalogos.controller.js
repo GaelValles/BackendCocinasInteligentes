@@ -2,6 +2,118 @@ import CotizadorConfig from '../models/cotizadorConfig.model.js';
 import Materiales from '../models/materiales.model.js';
 import Admin from '../models/admin.model.js';
 
+const BASE_MATERIAL_IDS = ['melamina', 'mdf', 'tech'];
+const HERRAJE_IDS = ['correderas', 'bisagras', 'jaladeras', 'bote', 'iluminacion'];
+
+const normalizeText = (value) => String(value || '').trim();
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const normalizeSection = (value) => normalizeText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, '_');
+
+const parseBooleanQuery = (value, fallback) => {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'si'].includes(normalized)) return true;
+    if (['false', '0', 'no'].includes(normalized)) return false;
+    return fallback;
+};
+
+const parseSections = (query = {}) => {
+    const values = [];
+    if (query.seccion) values.push(query.seccion);
+    if (query.secciones) {
+        values.push(...String(query.secciones).split(','));
+    }
+
+    const normalized = values
+        .map(normalizeSection)
+        .filter(Boolean);
+
+    return [...new Set(normalized)];
+};
+
+const normalizeTier = (gamaValue, tierValue) => {
+    const raw = normalizeText(gamaValue || tierValue);
+    if (!raw) return 'Tendencia';
+
+    const check = raw.toLowerCase();
+    if (check.includes('premium')) return 'Premium';
+    if (check.includes('estandar') || check.includes('standard') || check.includes('basic')) return 'Estandar';
+    return 'Tendencia';
+};
+
+const buildMaterialCatalogFilter = (query = {}, { defaultDisponible = true, forceHerrajes = false } = {}) => {
+    const filter = {};
+    const disponible = parseBooleanQuery(query.disponible, defaultDisponible);
+    if (disponible !== undefined) filter.disponible = disponible;
+
+    if (query.categoria) {
+        filter.categoria = new RegExp(`^${escapeRegex(normalizeText(query.categoria))}$`, 'i');
+    }
+
+    if (query.proveedor) {
+        filter.proveedor = new RegExp(escapeRegex(normalizeText(query.proveedor)), 'i');
+    }
+
+    const sections = parseSections(query);
+    if (sections.length === 1) {
+        filter.seccion = sections[0];
+    } else if (sections.length > 1) {
+        filter.seccion = { $in: sections };
+    }
+
+    if (query.q) {
+        const qRegex = new RegExp(escapeRegex(normalizeText(query.q)), 'i');
+        filter.$or = [
+            { nombre: qRegex },
+            { descripcion: qRegex },
+            { idCotizador: qRegex },
+            { categoria: qRegex },
+            { proveedor: qRegex }
+        ];
+    }
+
+    if (forceHerrajes) {
+        filter.$and = [
+            {
+                $or: [
+                    { categoria: /herrajes/i },
+                    { idCotizador: { $in: HERRAJE_IDS } }
+                ]
+            }
+        ];
+    }
+
+    return filter;
+};
+
+const mapCatalogMaterial = (item) => {
+    const tier = normalizeTier(item.gama, item.tier);
+    return {
+        _id: item._id,
+        id: item.idCotizador || String(item._id),
+        idCotizador: item.idCotizador || null,
+        nombre: item.nombre,
+        unidadMedida: item.unidadMedida || 'unidad',
+        precioUnitario: item.precioUnitario ?? null,
+        precioPorMetro: item.precioPorMetro ?? null,
+        precioMetroLineal: item.precioPorMetro ?? null,
+        descripcion: item.descripcion || '',
+        categoria: item.categoria || '',
+        seccion: item.seccion || null,
+        proveedor: item.proveedor || '',
+        disponible: !!item.disponible,
+        gama: tier,
+        tier,
+        image: item.image || ''
+    };
+};
+
 /**
  * Obtener lista de materiales base activos
  */
@@ -9,31 +121,18 @@ export const obtenerMateriales = async (req, res) => {
     try {
         const { base } = req.query;
 
-        let filtro = { disponible: true };
+        const filtro = buildMaterialCatalogFilter(req.query, { defaultDisponible: true });
         // Compat: si el frontend solicita solo materiales base (cotizador), usar idCotizador filter
         if (base === 'true') {
-            filtro.idCotizador = { $in: ['melamina', 'mdf', 'tech'] };
+            filtro.idCotizador = { $in: BASE_MATERIAL_IDS };
         }
 
         const materiales = await Materiales.find(filtro)
-            .select('idCotizador nombre precioPorMetro precioUnitario descripcion disponible categoria seccion proveedor');
+            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion disponible categoria seccion proveedor image gama tier')
+            .sort({ nombre: 1 })
+            .lean();
 
-        // Mapear a la estructura que espera el frontend (más completa)
-        const mapped = materiales.map(m => ({
-            _id: m._id,
-            id: m.idCotizador || String(m._id),
-            idCotizador: m.idCotizador || null,
-            nombre: m.nombre,
-            unidadMedida: m.unidadMedida || 'unidad',
-            precioUnitario: m.precioUnitario ?? null,
-            precioPorMetro: m.precioPorMetro ?? null,
-            precioMetroLineal: m.precioPorMetro ?? null,
-            descripcion: m.descripcion || '',
-            categoria: m.categoria || '',
-            seccion: m.seccion || null,
-            proveedor: m.proveedor || '',
-            disponible: !!m.disponible
-        }));
+        const mapped = materiales.map(mapCatalogMaterial);
 
         res.status(200).json({ success: true, data: mapped });
     } catch (error) {
@@ -47,29 +146,17 @@ export const obtenerMateriales = async (req, res) => {
  */
 export const obtenerHerrajes = async (req, res) => {
     try {
-        // Obtener por categoria Herrajes o por idCotizador conocido
-        const herrajeIds = ['correderas', 'bisagras', 'jaladeras', 'bote', 'iluminacion'];
-        const herrajes = await Materiales.find({ 
-            disponible: true,
-            $or: [
-                { categoria: 'Herrajes' },
-                { idCotizador: { $in: herrajeIds } }
-            ]
-        }).select('idCotizador nombre unidadMedida precioUnitario descripcion categoria seccion disponible proveedor');
+        const filtro = buildMaterialCatalogFilter(req.query, {
+            defaultDisponible: true,
+            forceHerrajes: true
+        });
 
-        const mapped = herrajes.map(h => ({
-            _id: h._id,
-            id: h.idCotizador || String(h._id),
-            idCotizador: h.idCotizador || null,
-            nombre: h.nombre,
-            unidadMedida: h.unidadMedida || 'unidad',
-            precioUnitario: h.precioUnitario ?? null,
-            descripcion: h.descripcion || '',
-            categoria: h.categoria || '',
-            seccion: h.seccion || null,
-            proveedor: h.proveedor || '',
-            disponible: !!h.disponible
-        }));
+        const herrajes = await Materiales.find(filtro)
+            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion categoria seccion disponible proveedor image gama tier')
+            .sort({ nombre: 1 })
+            .lean();
+
+        const mapped = herrajes.map(mapCatalogMaterial);
 
         res.status(200).json({ success: true, data: mapped });
     } catch (error) {

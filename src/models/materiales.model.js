@@ -82,6 +82,20 @@ const materialesSchema = new mongoose.Schema({
         type: String,
         default: ''
     },
+    image: {
+        type: String,
+        default: ''
+    },
+    gama: {
+        type: String,
+        enum: ['Estandar', 'Tendencia', 'Premium'],
+        default: 'Tendencia'
+    },
+    tier: {
+        type: String,
+        enum: ['Estandar', 'Tendencia', 'Premium'],
+        default: null
+    },
     disponible: {
         type: Boolean,
         default: true
@@ -109,6 +123,7 @@ const materialesSchema = new mongoose.Schema({
 materialesSchema.index({ categoria: 1, disponible: 1 });
 materialesSchema.index({ seccion: 1, disponible: 1 });
 materialesSchema.index({ idCotizador: 1, disponible: 1 });
+materialesSchema.index({ proveedor: 1, disponible: 1 });
 
 // Método para actualizar precio y guardar historial
 materialesSchema.methods.actualizarPrecio = function(nuevoPrecio, usuarioId) {

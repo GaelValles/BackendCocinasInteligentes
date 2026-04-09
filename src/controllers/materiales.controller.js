@@ -63,11 +63,12 @@ const normalizeCategoriaToSectionIfNeeded = (categoriaInput) => {
         };
     }
 
-    // Si ya es una sección lowercase conocida
-    if (ALLOWED_SECTIONS.includes(normalized.toLowerCase())) {
+    // Si ya es una sección conocida
+    const normalizedSection = normalizeSection(normalized);
+    if (ALLOWED_SECTIONS.includes(normalizedSection)) {
         return {
             categoria: 'Otro',
-            seccion: normalized.toLowerCase()
+            seccion: normalizedSection
         };
     }
 
@@ -99,23 +100,60 @@ const normalizeString = (value) => {
     return String(value).trim();
 };
 
-const mapMaterialResponse = (material) => ({
-    _id: material._id,
-    id: material.idCotizador || String(material._id),
-    idCotizador: material.idCotizador || null,
-    nombre: material.nombre,
-    descripcion: material.descripcion || '',
-    unidadMedida: material.unidadMedida,
-    precioUnitario: material.precioUnitario ?? null,
-    precioPorMetro: material.precioPorMetro ?? null,
-    precioMetroLineal: material.precioPorMetro ?? null,
-    categoria: material.categoria,
-    seccion: material.seccion || null,
-    proveedor: material.proveedor || '',
-    disponible: Boolean(material.disponible),
-    createdAt: material.createdAt,
-    updatedAt: material.updatedAt
-});
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const parseBoolean = (value, fallback) => {
+    if (value === undefined || value === null || value === '') return fallback;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'si'].includes(normalized)) return true;
+    if (['false', '0', 'no'].includes(normalized)) return false;
+    return fallback;
+};
+
+const normalizeSection = (value) => {
+    if (value === undefined || value === null) return undefined;
+    return String(value)
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+};
+
+const normalizeTier = (gamaValue, tierValue) => {
+    const raw = normalizeString(gamaValue || tierValue);
+    if (!raw) return 'Tendencia';
+
+    const check = raw.toLowerCase();
+    if (check.includes('premium')) return 'Premium';
+    if (check.includes('estandar') || check.includes('standard') || check.includes('basic')) return 'Estandar';
+    return 'Tendencia';
+};
+
+const mapMaterialResponse = (material) => {
+    const tier = normalizeTier(material.gama, material.tier);
+    return {
+        _id: material._id,
+        id: material.idCotizador || String(material._id),
+        idCotizador: material.idCotizador || null,
+        nombre: material.nombre,
+        descripcion: material.descripcion || '',
+        unidadMedida: material.unidadMedida,
+        precioUnitario: material.precioUnitario ?? null,
+        precioPorMetro: material.precioPorMetro ?? null,
+        precioMetroLineal: material.precioPorMetro ?? null,
+        categoria: material.categoria,
+        seccion: material.seccion || null,
+        proveedor: material.proveedor || '',
+        image: material.image || '',
+        gama: tier,
+        tier,
+        disponible: Boolean(material.disponible),
+        createdAt: material.createdAt,
+        updatedAt: material.updatedAt
+    };
+};
 
 const buildValidationResult = (payload = {}, { create = false, herraje = false } = {}) => {
     const errors = [];
@@ -123,9 +161,13 @@ const buildValidationResult = (payload = {}, { create = false, herraje = false }
     const nombre = normalizeString(payload.nombre);
     const descripcion = hasOwn(payload, 'descripcion') ? normalizeString(payload.descripcion) : undefined;
     const proveedor = hasOwn(payload, 'proveedor') ? normalizeString(payload.proveedor) : undefined;
+    const image = hasOwn(payload, 'image') ? normalizeString(payload.image) : undefined;
     const idCotizador = hasOwn(payload, 'idCotizador') ? normalizeString(payload.idCotizador) : undefined;
+    const tierNormalized = hasOwn(payload, 'gama') || hasOwn(payload, 'tier')
+        ? normalizeTier(payload.gama, payload.tier)
+        : undefined;
 
-    const rawSection = hasOwn(payload, 'seccion') ? normalizeString(payload.seccion)?.toLowerCase() : undefined;
+    const rawSection = hasOwn(payload, 'seccion') ? normalizeSection(payload.seccion) : undefined;
     const rawUnidad = hasOwn(payload, 'unidadMedida') ? normalizeString(payload.unidadMedida) : undefined;
     const rawCategoria = hasOwn(payload, 'categoria') ? normalizeString(payload.categoria) : undefined;
 
@@ -205,8 +247,11 @@ const buildValidationResult = (payload = {}, { create = false, herraje = false }
             categoria,
             seccion,
             proveedor,
+            image,
+            gama: tierNormalized,
+            tier: tierNormalized,
             idCotizador,
-            disponible: hasOwn(payload, 'disponible') ? Boolean(payload.disponible) : undefined
+            disponible: hasOwn(payload, 'disponible') ? parseBoolean(payload.disponible, undefined) : undefined
         }
     };
 };
@@ -254,6 +299,9 @@ export const crearMaterial = async (req, res) => {
             categoria: data.categoria,
             seccion: data.seccion || undefined,
             proveedor: data.proveedor || '',
+            image: data.image || '',
+            gama: data.gama || 'Tendencia',
+            tier: data.tier || null,
             idCotizador: data.idCotizador || undefined,
             disponible: data.disponible ?? true,
             historialPrecios: data.precioUnitario !== null
@@ -275,16 +323,41 @@ export const crearMaterial = async (req, res) => {
 // Obtener todos los materiales
 export const obtenerMateriales = async (req, res) => {
     try {
-        const { categoria, disponible, seccion } = req.query;
+        const { categoria, disponible, seccion, secciones, proveedor, q } = req.query;
 
         const filtro = {};
-        if (categoria) filtro.categoria = categoria;
-        if (seccion) filtro.seccion = String(seccion).toLowerCase();
-        if (disponible !== undefined) filtro.disponible = disponible === 'true';
+        if (categoria) filtro.categoria = new RegExp(`^${escapeRegex(String(categoria).trim())}$`, 'i');
+
+        const sectionCandidates = [];
+        if (seccion) sectionCandidates.push(seccion);
+        if (secciones) sectionCandidates.push(...String(secciones).split(','));
+        const parsedSections = [...new Set(sectionCandidates.map(normalizeSection).filter(Boolean))];
+        if (parsedSections.length === 1) filtro.seccion = parsedSections[0];
+        if (parsedSections.length > 1) filtro.seccion = { $in: parsedSections };
+
+        if (proveedor) {
+            filtro.proveedor = new RegExp(escapeRegex(String(proveedor).trim()), 'i');
+        }
+
+        if (disponible !== undefined) {
+            filtro.disponible = parseBoolean(disponible, true);
+        }
+
+        if (q) {
+            const qRegex = new RegExp(escapeRegex(String(q).trim()), 'i');
+            filtro.$or = [
+                { nombre: qRegex },
+                { descripcion: qRegex },
+                { idCotizador: qRegex },
+                { categoria: qRegex },
+                { proveedor: qRegex }
+            ];
+        }
 
         const materiales = await Materiales.find(filtro)
-            .select('idCotizador nombre descripcion unidadMedida precioUnitario precioPorMetro categoria seccion proveedor disponible createdAt updatedAt')
-            .sort({ nombre: 1 });
+            .select('idCotizador nombre descripcion unidadMedida precioUnitario precioPorMetro categoria seccion proveedor image gama tier disponible createdAt updatedAt')
+            .sort({ nombre: 1 })
+            .lean();
 
         return res.status(200).json({ success: true, data: materiales.map(mapMaterialResponse) });
 
@@ -370,6 +443,9 @@ export const actualizarMaterial = async (req, res) => {
         if (data.categoria !== undefined) material.categoria = data.categoria;
         if (data.seccion !== undefined) material.seccion = data.seccion || undefined;
         if (data.proveedor !== undefined) material.proveedor = data.proveedor || '';
+        if (data.image !== undefined) material.image = data.image || '';
+        if (data.gama !== undefined) material.gama = data.gama;
+        if (data.tier !== undefined) material.tier = data.tier;
         if (data.idCotizador !== undefined) material.idCotizador = data.idCotizador || undefined;
         if (data.disponible !== undefined) material.disponible = data.disponible;
 
