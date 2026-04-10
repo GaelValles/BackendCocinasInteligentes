@@ -269,12 +269,29 @@ const shouldForceDropboxByTaskContext = async (taskId) => {
     return Boolean(task && (task.etapa === 'disenos' || task.sourceType === 'diseno'));
 };
 
-const uploadsDir = path.join(process.cwd(), 'uploads', 'tasks');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const runtimeUploadsBase = process.env.VERCEL ? '/tmp' : process.cwd();
+const uploadsDir = path.join(runtimeUploadsBase, 'uploads', 'tasks');
+
+const ensureUploadsDir = () => {
+    if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+};
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+    destination: (req, file, cb) => {
+        try {
+            ensureUploadsDir();
+            cb(null, uploadsDir);
+        } catch (error) {
+            cb(error);
+        }
+    },
+    filename: (req, file, cb) => {
+        const safeOriginalName = path.basename(String(file.originalname || 'archivo'))
+            .replace(/[^a-zA-Z0-9._-]/g, '_');
+        cb(null, `${Date.now()}-${safeOriginalName}`);
+    }
 });
 
 export const upload = multer({ storage });
