@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const envTokenSecret = String(process.env.TOKEN_SECRET || '').trim();
 

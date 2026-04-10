@@ -1,11 +1,6 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import dns from 'dns';
-
-// Configurar DNS de Google solo para esta aplicación
-dns.setServers(['8.8.8.8', '8.8.4.4']);
-
-dotenv.config(); // Carga las variables del archivo .env
+dotenv.config({ quiet: true }); // Carga variables de entorno sin ruido en logs
 // Validar que la variable de entorno exista y dar un mensaje claro si falta
 if (!process.env.connectDBUsers) {
   console.error('\n[FATAL] La variable de entorno `connectDBUsers` no está configurada.');
@@ -16,8 +11,28 @@ if (!process.env.connectDBUsers) {
 }
 
 export const connectDBClientes = mongoose.createConnection(process.env.connectDBUsers, {
-
+  serverSelectionTimeoutMS: 8000,
+  socketTimeoutMS: 20000,
+  maxPoolSize: 10,
+  minPoolSize: 0
 });
+
+let dbReadyPromise = null;
+
+export const ensureDbConnection = async () => {
+  if (connectDBClientes.readyState === 1) return connectDBClientes;
+
+  if (!dbReadyPromise) {
+    dbReadyPromise = connectDBClientes.asPromise()
+      .then(() => connectDBClientes)
+      .catch((error) => {
+        dbReadyPromise = null;
+        throw error;
+      });
+  }
+
+  return dbReadyPromise;
+};
 
 // Verifica conexión participantes
 connectDBClientes.on('connected', () => {

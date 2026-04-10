@@ -26,9 +26,10 @@ import seguimientoRoutes from './routes/seguimiento.routes.js';
 import clientesRoutes from './routes/clientes.routes.js';
 import cronRoutes from './routes/cron.routes.js';
 import { startFollowUpCron } from './services/followUpCron.js';
+import { ensureDbConnection } from './db.js';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 const DEV_ALLOWED_ORIGINS = new Set([
@@ -124,6 +125,20 @@ app.get('/', (req, res) => {
             upload: '/api/uploads'
         }
     });
+});
+
+// En serverless, garantizar conexión DB antes de atender cualquier endpoint /api.
+app.use('/api', async (req, res, next) => {
+    try {
+        await ensureDbConnection();
+        next();
+    } catch (error) {
+        console.error('Error conectando a MongoDB:', error?.message || error);
+        res.status(503).json({
+            success: false,
+            message: 'Servicio temporalmente no disponible (DB no conectada)'
+        });
+    }
 });
 
 // Montar las rutas con prefijo /api
