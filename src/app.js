@@ -13,6 +13,8 @@ import levantamientosRoutes from './routes/levantamientos.routes.js';
 import catalogosRoutes from './routes/catalogos.routes.js';
 import usuariosRoutes from './routes/usuarios.routes.js';
 import materialesRoutes from './routes/materiales.routes.js';
+import electrodomesticosRoutes from './routes/electrodomesticos.routes.js';
+import extrasRoutes from './routes/extras.routes.js';
 import disenosRoutes from './routes/disenos.routes.js';
 import ordenTrabajoRoutes from './routes/ordenTrabajo.routes.js';
 import pagosRoutes from './routes/pagos.routes.js';
@@ -112,6 +114,8 @@ app.get('/', (req, res) => {
             catalogos: '/api/catalogos',
             usuarios: '/api/usuarios',
             materiales: '/api/materiales',
+                        electrodomesticos: '/api/electrodomesticos',
+                        extras: '/api/extras',
             citas: '/api/citas',
             contacto: '/api/contacto',
             disenos: '/api/disenos',
@@ -154,6 +158,8 @@ app.use('/api/catalogo', catalogosRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/empleados', usuariosRoutes); // Alias para empleados
 app.use('/api/materiales', materialesRoutes);
+app.use('/api/electrodomesticos', electrodomesticosRoutes);
+app.use('/api/extras', extrasRoutes);
 app.use('/api/disenos', disenosRoutes);
 app.use('/api/ordenes', ordenTrabajoRoutes);
 app.use('/api/pagos', pagosRoutes);
