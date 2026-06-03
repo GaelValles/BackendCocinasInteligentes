@@ -179,17 +179,12 @@ const cotizacionSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Índices para optimizar consultas
 cotizacionSchema.index({ creadoPor: 1, estado: 1 });
 cotizacionSchema.index({ cliente: 1 });
 cotizacionSchema.index({ empleadoAsignado: 1 });
 
-// Middleware pre-save para calcular precios automáticamente
 cotizacionSchema.pre('save', function(next) {
-    // CÁLCULO 1 - Factor de grosor
-    this.factorGrosor = this.materialThickness === '19' ? 1.08 : 1.0;
-    
-    // CÁLCULO 2 - Multiplicador de escenario
+    //  Multiplicador de escenario
     const multiplicadoresEscenario = {
         'esencial': 0.92,
         'tendencia': 1.05,
@@ -199,12 +194,12 @@ cotizacionSchema.pre('save', function(next) {
         this.multiplicadorEscenario = multiplicadoresEscenario[this.selectedScenario] || 1.0;
     }
     
-    // CÁLCULO 3 - Subtotal de materiales
+    //  Subtotal de materiales
     const metrosLineales = this.medidas?.metrosLineales || 0;
     const precioMaterial = this.precioMaterialPorMetro || 0;
     this.materialSubtotal = metrosLineales * precioMaterial * this.factorGrosor;
     
-    // CÁLCULO 4 - Subtotal de herrajes
+    // Subtotal de herrajes
     if (this.herrajes && this.herrajes.length > 0) {
         this.hardwareSubtotal = this.herrajes.reduce((sum, item) => {
             if (item.enabled) {
@@ -216,10 +211,10 @@ cotizacionSchema.pre('save', function(next) {
         this.hardwareSubtotal = 0;
     }
     
-    // CÁLCULO 5 - Subtotal de mano de obra
+    // Subtotal de mano de obra
     this.laborSubtotal = (this.labor || 0) + (this.flete || 0) + (this.instalacion || 0) + (this.desinstalacion || 0);
     
-    // CÁLCULO 6 - Precio final
+    // Precio final
     this.finalPrice = this.materialSubtotal + this.hardwareSubtotal + this.laborSubtotal;
     
     next();

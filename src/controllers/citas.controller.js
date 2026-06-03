@@ -9,8 +9,17 @@ import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.servic
 
 const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'empleado_general', 'staff'];
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
+const ESTADOS_CITA_VALIDOS = ['programada', 'en_proceso', 'completada', 'cancelada'];
 
 const citaToTaskEstado = (estadoCita) => (estadoCita === 'completada' ? 'completada' : 'pendiente');
+
+const normalizeString = (value) => (typeof value === 'string' ? value.trim() : value);
+
+const parseDateField = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 
 const buildCitaPayload = (cita) => ({
     fechaAgendada: cita.fechaAgendada || null,
@@ -18,16 +27,29 @@ const buildCitaPayload = (cita) => ({
     correoCliente: cita.correoCliente || '',
     telefonoCliente: cita.telefonoCliente || '',
     ubicacion: cita.ubicacion || '',
+  mapsUrl: cita.mapsUrl || '',
     informacionAdicional: cita.informacionAdicional || ''
 });
 
 const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
-    const assignedId = cita.ingenieroAsignado ? String(cita.ingenieroAsignado) : null;
-    let assignedName = '';
+    // Manejar ingenieroAsignado como array o singular (backward compatibility)
+    let assignedIds = [];
+    let assignedNames = [];
 
-    if (assignedId && mongoose.Types.ObjectId.isValid(assignedId)) {
-        const user = await Admin.findById(assignedId, 'nombre');
-        assignedName = user?.nombre || '';
+    if (Array.isArray(cita.ingenieroAsignado)) {
+        // Es array (nuevo formato)
+        assignedIds = cita.ingenieroAsignado
+            .filter(id => id && mongoose.Types.ObjectId.isValid(String(id)))
+            .map(id => String(id));
+    } else if (cita.ingenieroAsignado) {
+        // Es singular (formato antiguo)
+        assignedIds = [String(cita.ingenieroAsignado)];
+    }
+
+    // Obtener nombres de los ingenieros
+    if (assignedIds.length > 0) {
+        const ingenieros = await Admin.find({ _id: { $in: assignedIds } }, 'nombre');
+        assignedNames = ingenieros.map(ing => ing.nombre);
     }
 
     const citaId = String(cita._id);
@@ -41,8 +63,8 @@ const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
     const payload = {
         etapa: existing?.etapa && existing.etapa !== 'citas' ? existing.etapa : 'citas',
         estado: citaToTaskEstado(cita.estado),
-        asignadoA: assignedId ? [assignedId] : [],
-        asignadoANombre: assignedName ? [assignedName] : [],
+        asignadoA: assignedIds.length > 0 ? assignedIds : [],
+        asignadoANombre: assignedNames.length > 0 ? assignedNames : [],
         nombreProyecto: '',
         proyectoId: null,
         notas: cita.informacionAdicional || cita.especificacionesInicio?.especificaciones || '',
@@ -52,7 +74,7 @@ const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
         sourceType: 'cita',
         sourceId: citaId,
         cita: buildCitaPayload(cita),
-        // Keep legacy field in sync while old records still exist.
+        mapsUrl: cita.mapsUrl || '',
         sourceCitaId: citaId
     };
 
@@ -70,12 +92,15 @@ const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
         return existing;
     }
 
-    const nueva = new Tarea({ ...payload, historialCambios: [{
-        by: req.admin?._id ? String(req.admin._id) : null,
-        action: 'create_from_cita',
-        changes: { citaId: String(cita._id), estadoCita: cita.estado },
-        at: new Date()
-    }] });
+    const nueva = new Tarea({ 
+        ...payload, 
+        historialCambios: [{
+            by: req.admin?._id ? String(req.admin._id) : null,
+            action: 'create_from_cita',
+            changes: { citaId: String(cita._id), estadoCita: cita.estado },
+            at: new Date()
+        }] 
+    });
     await nueva.save();
     await upsertTrackingAccessFromTarea(nueva);
     return nueva;
@@ -239,86 +264,408 @@ export const asignarIngenieroCita = async (req, res) => {
     const { id } = req.params;
     const { ingenieroId } = req.body;
 
-    console.log('Usuario autenticado:', req.admin);
-    console.log('Rol del usuario:', req.admin?.rol);
-
     // Verificar que el usuario sea admin
     if (!req.admin || req.admin.rol !== 'admin') {
       return res.status(403).json({ 
-        message: "Solo el administrador puede asignar ingenieros",
-        rol: req.admin?.rol 
+        success: false,
+        message: "Solo el administrador puede asignar ingenieros"
       });
     }
 
     // Validar ID de cita
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: "ID de cita inválido" });
+      return res.status(400).json({ 
+        success: false,
+        message: "ID de cita inválido" 
+      });
     }
 
     // Buscar la cita
     const cita = await Citas.findById(id);
     if (!cita) {
-      return res.status(404).json({ message: "Cita no encontrada" });
+      return res.status(404).json({ 
+        success: false,
+        message: "Cita no encontrada" 
+      });
     }
 
     // Si se proporciona un ingenieroId, validar y asignar
     if (ingenieroId) {
       if (!mongoose.Types.ObjectId.isValid(ingenieroId)) {
-        return res.status(400).json({ message: "ID de ingeniero inválido" });
-      }
-
-      // Verificar que el ingeniero existe y tiene el rol correcto
-      const ingeniero = await Admin.findById(ingenieroId);
-      if (!ingeniero) {
-        return res.status(404).json({ message: "Ingeniero no encontrado" });
-      }
-
-            if (!ROLES_ASIGNABLES.includes(ingeniero.rol)) {
         return res.status(400).json({ 
-                    message: "El usuario no tiene un rol asignable",
-          rolEncontrado: ingeniero.rol 
+          success: false,
+          message: "ID de ingeniero inválido" 
         });
       }
 
-      // Remover la cita del ingeniero anterior si existe
-      if (cita.ingenieroAsignado && cita.ingenieroAsignado.toString() !== ingenieroId) {
-        await Admin.findByIdAndUpdate(
-          cita.ingenieroAsignado,
-          { $pull: { citas: cita._id } }
-        );
+      // Verificar que el ingeniero existe
+      const ingeniero = await Admin.findById(ingenieroId);
+      if (!ingeniero) {
+        return res.status(404).json({ 
+          success: false,
+          message: "Ingeniero no encontrado" 
+        });
       }
 
-      // Asignar el nuevo ingeniero a la cita
-      cita.ingenieroAsignado = ingenieroId;
-      await cita.save();
+      if (!ROLES_ASIGNABLES.includes(ingeniero.rol)) {
+        return res.status(400).json({ 
+          success: false,
+          message: "El usuario no tiene un rol asignable"
+        });
+      }
 
-      // Agregar la cita al array de citas del ingeniero si no existe
-      if (!ingeniero.citas.includes(cita._id)) {
-        ingeniero.citas.push(cita._id);
-        await ingeniero.save();
+      // Asignar a array (agregar si no existe)
+      if (!cita.ingenieroAsignado.includes(ingenieroId)) {
+        cita.ingenieroAsignado.push(ingenieroId);
+        await cita.save();
+
+        // Agregar la cita al array de citas del ingeniero si no existe
+        if (!ingeniero.citas.includes(cita._id)) {
+          ingeniero.citas.push(cita._id);
+          await ingeniero.save();
+        }
       }
     } else {
       // Si no se proporciona ingenieroId, remover la asignación
-      if (cita.ingenieroAsignado) {
-        await Admin.findByIdAndUpdate(
-          cita.ingenieroAsignado,
-          { $pull: { citas: cita._id } }
-        );
-      }
-      cita.ingenieroAsignado = null;
+      cita.ingenieroAsignado = [];
       await cita.save();
     }
 
-        // Obtener la cita actualizada con el ingeniero poblado
-        const citaPopulated = await Citas.findById(id)
-            .populate('ingenieroAsignado', 'nombre correo telefono rol');
+    // Obtener la cita actualizada con los ingenieros poblados
+    const citaPopulated = await Citas.findById(id)
+      .populate('ingenieroAsignado', 'nombre correo telefono rol');
 
-        await syncTaskFromCita(citaPopulated, req, 'assign_ingeniero_cita');
+    await syncTaskFromCita(citaPopulated, req, 'assign_ingeniero_cita');
 
-        return res.json({ success: true, data: { message: ingenieroId ? 'Trabajador asignado correctamente' : 'Asignación de ingeniero removida', cita: citaPopulated } });
+    return res.json({ 
+      success: true, 
+      message: 'Ingeniero asignado correctamente',
+      data: { cita: citaPopulated } 
+    });
   } catch (error) {
-        console.error('Error en asignarIngenieroCita:', error);
-        return res.status(500).json({ success: false, message: 'Error al asignar ingeniero', error: error.message });
+    console.error('Error en asignarIngenieroCita:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Error al asignar ingeniero', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Asignar Múltiples Ingenieros a una Cita
+ * PUT /api/citas/:id/asignarIngenieros
+ */
+export const asignarMultiplesIngenieros = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ingenieroIds } = req.body;
+
+    // Verificar que el usuario sea admin
+    if (!req.admin || req.admin.rol !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Solo administradores pueden hacer esta operación"
+      });
+    }
+
+    // Validar que ingenieroIds sea array
+    if (!Array.isArray(ingenieroIds)) {
+      return res.status(400).json({
+        success: false,
+        message: "ingenieroIds debe ser un array"
+      });
+    }
+
+    // Validar ID de cita
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID de cita inválido"
+      });
+    }
+
+    // Buscar la cita
+    const cita = await Citas.findById(id);
+    if (!cita) {
+      return res.status(404).json({
+        success: false,
+        message: "Cita no encontrada"
+      });
+    }
+
+    // Remover duplicados
+    const uniqueIds = [...new Set(ingenieroIds.map(id => String(id)))];
+
+    // Validar que todos los IDs sean válidos
+    for (const ingId of uniqueIds) {
+      if (!mongoose.Types.ObjectId.isValid(ingId)) {
+        return res.status(400).json({
+          success: false,
+          message: `ID de ingeniero inválido: ${ingId}`
+        });
+      }
+    }
+
+    // Verificar que todos los ingenieros existen
+    const ingenieros = await Admin.find({ _id: { $in: uniqueIds } });
+    if (ingenieros.length !== uniqueIds.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Uno o más ingenieros no existen"
+      });
+    }
+
+    // Verificar que todos tengan roles asignables
+    for (const ing of ingenieros) {
+      if (!ROLES_ASIGNABLES.includes(ing.rol)) {
+        return res.status(400).json({
+          success: false,
+          message: `${ing.nombre} no tiene un rol asignable (tiene: ${ing.rol})`
+        });
+      }
+    }
+
+    // Actualizar asignación
+    cita.ingenieroAsignado = uniqueIds;
+    await cita.save();
+
+    // Obtener la cita actualizada con los ingenieros poblados
+    const citaPopulated = await Citas.findById(id)
+      .populate('ingenieroAsignado', 'nombre correo telefono rol');
+
+    await syncTaskFromCita(citaPopulated, req, 'assign_multiple_ingenieros');
+
+    return res.json({
+      success: true,
+      message: "Ingenieros asignados correctamente",
+      data: { cita: citaPopulated }
+    });
+  } catch (error) {
+    console.error('Error en asignarMultiplesIngenieros:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Error al asignar ingenieros",
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Actualizar Datos del Cliente en la Cita
+ * PUT /api/citas/:id/actualizarDatos
+ */
+export const actualizarDatosCita = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombreCliente, correoCliente, telefonoCliente, ubicacion, informacionAdicional } = req.body;
+
+    // Verificar que el usuario sea admin
+    if (!req.admin || req.admin.rol !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Solo administradores pueden editar datos de cita"
+      });
+    }
+
+    // Validar ID de cita
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID de cita inválido"
+      });
+    }
+
+    // Buscar la cita
+    const cita = await Citas.findById(id);
+    if (!cita) {
+      return res.status(404).json({
+        success: false,
+        message: "Cita no encontrada"
+      });
+    }
+
+    const camposRecibidos = [nombreCliente, correoCliente, telefonoCliente, ubicacion, informacionAdicional]
+      .some((valor) => valor !== undefined);
+
+    if (!camposRecibidos) {
+      return res.status(400).json({
+        success: false,
+        message: "No se recibieron datos para actualizar la cita"
+      });
+    }
+
+    // Validaciones
+    if (nombreCliente && nombreCliente.trim().length < 3) {
+      return res.status(400).json({
+        success: false,
+        message: "Nombre del cliente debe tener al menos 3 caracteres"
+      });
+    }
+
+    if (correoCliente) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(correoCliente)) {
+        return res.status(400).json({
+          success: false,
+          message: "Email no válido"
+        });
+      }
+    }
+
+    if (telefonoCliente) {
+      const soloNumeros = telefonoCliente.replace(/\D/g, '');
+      if (soloNumeros.length < 7) {
+        return res.status(400).json({
+          success: false,
+          message: "Teléfono debe tener al menos 7 dígitos"
+        });
+      }
+    }
+
+    // Construir objeto de actualización
+    const updateData = {};
+    if (nombreCliente !== undefined) updateData.nombreCliente = normalizeString(nombreCliente);
+    if (correoCliente !== undefined) updateData.correoCliente = normalizeString(correoCliente)?.toLowerCase();
+    if (telefonoCliente !== undefined) updateData.telefonoCliente = normalizeString(telefonoCliente);
+    if (ubicacion !== undefined) updateData.ubicacion = ubicacion;
+    if (informacionAdicional !== undefined) updateData.informacionAdicional = informacionAdicional;
+
+    // Actualizar la cita
+    const citaActualizada = await Citas.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    ).populate('ingenieroAsignado', 'nombre correo telefono rol');
+
+    await syncTaskFromCita(citaActualizada, req, 'update_datos_cita');
+
+    return res.json({
+      success: true,
+      message: "Datos de la cita actualizados correctamente",
+      data: { cita: citaActualizada }
+    });
+  } catch (error) {
+    console.error('Error en actualizarDatosCita:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Error al actualizar datos",
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Actualizar Estado de la Cita
+ * PUT /api/citas/:id/actualizarEstado
+ */
+export const actualizarEstadoCita = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { estado, estadoCita, fechaTermino } = req.body;
+    const estadoRecibido = estado ?? estadoCita;
+
+    // Verificar que el usuario sea admin
+    if (!req.admin || req.admin.rol !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: "Solo administradores pueden cambiar el estado"
+      });
+    }
+
+    // Validar ID de cita
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "ID de cita inválido"
+      });
+    }
+
+    // Estados válidos
+    if (!ESTADOS_CITA_VALIDOS.includes(estadoRecibido)) {
+      return res.status(400).json({
+        success: false,
+        message: `Estado inválido. Valores permitidos: ${ESTADOS_CITA_VALIDOS.join(', ')}`
+      });
+    }
+
+    // Buscar la cita
+    const cita = await Citas.findById(id);
+    if (!cita) {
+      return res.status(404).json({
+        success: false,
+        message: "Cita no encontrada"
+      });
+    }
+
+    // Validaciones de transición de estado
+    const estadoActual = cita.estado;
+    const transicionesValidas = {
+      'programada': ['en_proceso', 'cancelada'],
+      'en_proceso': ['completada', 'cancelada'],
+      'completada': [], // No puede cambiar
+      'cancelada': []    // No puede cambiar
+    };
+
+    if (!transicionesValidas[estadoActual].includes(estadoRecibido)) {
+      return res.status(400).json({
+        success: false,
+        message: `No se puede cambiar de '${estadoActual}' a '${estadoRecibido}'`
+      });
+    }
+
+    const fechaTerminoParseada = parseDateField(fechaTermino);
+
+    if (fechaTermino && !fechaTerminoParseada) {
+      return res.status(400).json({
+        success: false,
+        message: "fechaTermino inválida"
+      });
+    }
+
+    // Si se proporciona fechaTermino, validar que sea >= fechaAgendada
+    if (fechaTerminoParseada) {
+      const termino = fechaTerminoParseada;
+      if (termino < cita.fechaAgendada) {
+        return res.status(400).json({
+          success: false,
+          message: "La fecha de término no puede ser anterior a la fecha agendada"
+        });
+      }
+    }
+
+    // Actualizar la cita
+    const updateData = { estado: estadoRecibido };
+    if (estadoRecibido === 'completada') {
+      updateData.fechaTermino = fechaTerminoParseada || new Date();
+      // Si completa, también marcar fechaInicio si no existe
+      if (!cita.fechaInicio) {
+        updateData.fechaInicio = cita.fechaAgendada;
+      }
+    } else if (fechaTerminoParseada) {
+      updateData.fechaTermino = fechaTerminoParseada;
+    }
+
+    const citaActualizada = await Citas.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true }
+    ).populate('ingenieroAsignado', 'nombre correo telefono rol');
+
+    await syncTaskFromCita(citaActualizada, req, 'update_estado_cita');
+
+    return res.json({
+      success: true,
+      message: `Estado actualizado a '${estadoRecibido}'`,
+      data: { cita: citaActualizada }
+    });
+  } catch (error) {
+    console.error('Error en actualizarEstadoCita:', error);
+    return res.status(500).json({
+      success: false,
+      message: "Error al actualizar estado",
+      error: error.message
+    });
   }
 };
 
@@ -382,24 +729,73 @@ export const obtenerCitasPorCliente = async (req, res) => {
 export const actualizarCita = async (req, res) => {
     try {
         const { id } = req.params;
-        const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, informacionAdicional, estado, diseno, ingenieroAsignado } = req.body;
+    const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, mapsUrl, informacionAdicional, estado, estadoCita, diseno, ingenieroAsignado } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'ID de cita inválido' });
+    }
 
         const cita = await Citas.findById(id);
         if (!cita) return res.status(404).json({ success: false, message: 'Cita no encontrada' });
 
+    const estadoNormalizado = estado ?? estadoCita;
+    const hayDatosParaActualizar = [
+      fechaAgendada,
+      fechaInicio,
+      fechaTermino,
+      nombreCliente,
+      correoCliente,
+      telefonoCliente,
+      ubicacion,
+      mapsUrl,
+      informacionAdicional,
+      estadoNormalizado,
+      diseno,
+      ingenieroAsignado
+    ].some((valor) => valor !== undefined);
+
+    if (!hayDatosParaActualizar) {
+      return res.status(400).json({
+        success: false,
+        message: 'No se recibieron datos para actualizar la cita'
+      });
+    }
+
+    if (estadoNormalizado !== undefined && !ESTADOS_CITA_VALIDOS.includes(estadoNormalizado)) {
+      return res.status(400).json({
+        success: false,
+        message: `Estado inválido. Valores permitidos: ${ESTADOS_CITA_VALIDOS.join(', ')}`
+      });
+    }
+
         // Construir objeto de actualización
         const updateData = {};
-        if (fechaAgendada) updateData.fechaAgendada = new Date(fechaAgendada);
-        if (fechaInicio) updateData.fechaInicio = new Date(fechaInicio);
-        if (fechaTermino) updateData.fechaTermino = new Date(fechaTermino);
-        if (nombreCliente) updateData.nombreCliente = nombreCliente.trim();
-        if (correoCliente) updateData.correoCliente = correoCliente.toLowerCase().trim();
-        if (telefonoCliente) updateData.telefonoCliente = telefonoCliente.trim();
-        if (ubicacion !== undefined) updateData.ubicacion = ubicacion.trim();
+    const fechaAgendadaParseada = parseDateField(fechaAgendada);
+    const fechaInicioParseada = parseDateField(fechaInicio);
+    const fechaTerminoParseada = parseDateField(fechaTermino);
+
+    if (fechaAgendada !== undefined && !fechaAgendadaParseada) {
+      return res.status(400).json({ success: false, message: 'fechaAgendada inválida' });
+    }
+    if (fechaInicio !== undefined && !fechaInicioParseada) {
+      return res.status(400).json({ success: false, message: 'fechaInicio inválida' });
+    }
+    if (fechaTermino !== undefined && !fechaTerminoParseada) {
+      return res.status(400).json({ success: false, message: 'fechaTermino inválida' });
+    }
+
+    if (fechaAgendadaParseada) updateData.fechaAgendada = fechaAgendadaParseada;
+    if (fechaInicioParseada) updateData.fechaInicio = fechaInicioParseada;
+    if (fechaTerminoParseada) updateData.fechaTermino = fechaTerminoParseada;
+    if (nombreCliente !== undefined) updateData.nombreCliente = normalizeString(nombreCliente);
+    if (correoCliente !== undefined) updateData.correoCliente = normalizeString(correoCliente)?.toLowerCase();
+    if (telefonoCliente !== undefined) updateData.telefonoCliente = normalizeString(telefonoCliente);
+    if (ubicacion !== undefined) updateData.ubicacion = normalizeString(ubicacion);
+    if (mapsUrl !== undefined) updateData.mapsUrl = normalizeString(mapsUrl);
         if (informacionAdicional !== undefined) updateData.informacionAdicional = informacionAdicional;
-        if (estado) updateData.estado = estado;
+    if (estadoNormalizado !== undefined) updateData.estado = estadoNormalizado;
         if (diseno !== undefined) updateData.diseno = diseno;
-        if (ingenieroAsignado !== undefined) updateData.ingenieroAsignado = ingenieroAsignado || null;
+    if (ingenieroAsignado !== undefined) updateData.ingenieroAsignado = ingenieroAsignado || [];
 
         // Determine if estado will change for history
         const previoEstado = cita.estado;
@@ -475,7 +871,12 @@ export const obtenerCita = async (req, res) => {
         
         // Si es ingeniero o arquitecto, solo puede ver sus citas asignadas
         if (req.admin && ROLES_OPERATIVOS.includes(req.admin.rol)) {
-            if (!cita.ingenieroAsignado || cita.ingenieroAsignado._id.toString() !== req.admin.id.toString()) {
+            const adminId = String(req.admin.id || req.admin._id);
+            const esAsignado = Array.isArray(cita.ingenieroAsignado)
+                ? cita.ingenieroAsignado.some(id => String(id) === adminId)
+                : cita.ingenieroAsignado && String(cita.ingenieroAsignado) === adminId;
+            
+            if (!esAsignado) {
                 return res.status(403).json({ success: false, message: 'No tienes permiso para ver esta cita' });
             }
         }
@@ -491,15 +892,18 @@ export const getAllCitas = obtenerCitas;
 
 export const updateCitaEstado = async (req, res) => {
     try {
-        const { estado } = req.body;
+    const { estado, estadoCita } = req.body;
+    const estadoRecibido = estado ?? estadoCita;
         const estadosValidos = ['programada', 'en_proceso', 'completada', 'cancelada'];
-        if (!estadosValidos.includes(estado)) {
+    if (!estadosValidos.includes(estadoRecibido)) {
             return res.status(400).json({ success: false, message: 'Estado no válido' });
         }
 
         // Delegate to actualizarCita to ensure single update path
         // If completing, set fechaTermino when not provided
-        if (estado === 'completada' && !req.body.fechaTermino) {
+    req.body.estado = estadoRecibido;
+
+    if (estadoRecibido === 'completada' && !req.body.fechaTermino) {
             req.body.fechaTermino = new Date();
         }
 
@@ -529,8 +933,13 @@ export const iniciarCita = async (req, res) => {
 
         // Si es ingeniero o arquitecto, solo puede iniciar sus citas asignadas
         if (ROLES_OPERATIVOS.includes(req.admin.rol)) {
-            if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
-                return res.status(403).json({ message: "Solo puedes iniciar las citas asignadas a ti" });
+            const adminId = String(req.admin.id || req.admin._id);
+            const esAsignado = Array.isArray(cita.ingenieroAsignado)
+                ? cita.ingenieroAsignado.some(id => String(id) === adminId)
+                : cita.ingenieroAsignado && String(cita.ingenieroAsignado) === adminId;
+            
+            if (!esAsignado) {
+                return res.status(403).json({ success: false, message: "Solo puedes iniciar las citas asignadas a ti" });
             }
         }
 
@@ -590,8 +999,13 @@ export const finalizarCita = async (req, res) => {
 
         // Si es ingeniero o arquitecto, solo puede finalizar sus citas asignadas
         if (ROLES_OPERATIVOS.includes(req.admin.rol)) {
-            if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
-                return res.status(403).json({ message: "Solo puedes finalizar las citas asignadas a ti" });
+            const adminId = String(req.admin.id || req.admin._id);
+            const esAsignado = Array.isArray(cita.ingenieroAsignado)
+                ? cita.ingenieroAsignado.some(id => String(id) === adminId)
+                : cita.ingenieroAsignado && String(cita.ingenieroAsignado) === adminId;
+            
+            if (!esAsignado) {
+                return res.status(403).json({ success: false, message: "Solo puedes finalizar las citas asignadas a ti" });
             }
         }
 
@@ -723,7 +1137,12 @@ export const actualizarEspecificaciones = async (req, res) => {
         }
 
         // Verificar que la cita esté asignada al ingeniero
-        if (!cita.ingenieroAsignado || cita.ingenieroAsignado.toString() !== req.admin.id.toString()) {
+        const adminId = String(req.admin.id || req.admin._id);
+        const esAsignado = Array.isArray(cita.ingenieroAsignado)
+            ? cita.ingenieroAsignado.some(id => String(id) === adminId)
+            : cita.ingenieroAsignado && String(cita.ingenieroAsignado) === adminId;
+        
+        if (!esAsignado) {
             return res.status(403).json({ message: "Solo puedes actualizar las especificaciones de tus citas asignadas" });
         }
 
@@ -795,5 +1214,41 @@ export const obtenerDisponibilidad = async (req, res) => {
             success: false, 
             message: "Error al consultar disponibilidad"
         });
+    }
+};
+
+/**
+ * Obtener Horarios Ocupados - PÚBLICO (Sin Autenticación)
+ * Retorna SOLO fecha y hora de citas ocupadas
+ * Optimizado para que el frontend cargue rápido los horarios disponibles
+ */
+export const obtenerHorariosOcupados = async (req, res) => {
+    try {
+        // Obtener hoy a las 00:00
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+
+        // Buscar citas activas (solo lo necesario: fecha)
+        const citas = await Citas.find({
+            estado: { $in: ['programada', 'en_proceso'] },
+            fechaAgendada: { $gte: hoy }
+        }).select('fechaAgendada -_id').lean();
+
+        // Convertir a formato simple: {fecha: "2026-05-20", hora: "14:00"}
+        const horarios = citas.map(cita => {
+            const fecha = new Date(cita.fechaAgendada);
+            return {
+                fecha: fecha.toISOString().split('T')[0], // YYYY-MM-DD
+                hora: String(fecha.getHours()).padStart(2, '0') + ':00' // HH:00
+            };
+        });
+
+        // Retornar array directo (más simple para el frontend)
+        return res.status(200).json(horarios);
+
+    } catch (error) {
+        console.error('Error en obtenerHorariosOcupados:', error);
+        // Retornar array vacío si hay error (no bloquea el frontend)
+        return res.status(200).json([]);
     }
 };

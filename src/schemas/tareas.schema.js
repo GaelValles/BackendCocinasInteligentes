@@ -39,6 +39,37 @@ const visitaPayloadSchema = z.object({
     actualizadaEn: z.union([z.string(), z.number(), z.date()]).nullable().optional()
 }).optional();
 
+const receiptImageSchema = z.string().optional().refine((value) => {
+    if (value === undefined || value === null || value === '') return true;
+    return /^https?:\/\//i.test(String(value).trim());
+}, 'receiptImage debe ser una URL valida (http/https)');
+
+const pagoDetalleSchema = z.object({
+    amount: z.coerce.number().min(0).optional(),
+    date: z.union([z.string(), z.number(), z.date()]).optional().transform((value) => {
+        if (value === undefined || value === null) return undefined;
+        if (value instanceof Date) return value.toISOString();
+        return String(value);
+    }),
+    receiptLabel: z.string().optional(),
+    receiptImage: receiptImageSchema
+}).optional();
+
+const pagosPayloadSchema = z.object({
+    anticipo: pagoDetalleSchema,
+    segundoPago: pagoDetalleSchema,
+    liquidacion: pagoDetalleSchema
+}).optional();
+
+const inversionPayloadSchema = z.union([
+    z.number(),
+    z.string()
+]).optional().transform((value) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? value : numeric;
+});
+
 const wallSpecSchema = z.record(z.string(), z.any());
 const fileUrlSchema = z.string().min(1, 'La URL del archivo es requerida').refine((value) => {
     const v = String(value || '').trim();
@@ -50,13 +81,42 @@ const asignadoASchema = z.union([
     z.string().min(1)
 ]).optional();
 
+const normalizeAssignedIds = (value) => {
+    if (value === undefined) return undefined;
+
+    const raw = Array.isArray(value) ? value : [value];
+    const normalized = raw
+        .map((item) => {
+            if (!item) return null;
+            if (typeof item === 'string') return item.trim();
+            if (typeof item === 'object') return String(item._id || item.id || '').trim();
+            return String(item).trim();
+        })
+        .filter(Boolean);
+
+    return Array.from(new Set(normalized));
+};
+
+const normalizeTaskAssignmentInput = (data) => {
+    const assignedIds = normalizeAssignedIds(data.asignadoA ?? data.assignedToIds ?? data.assignedTo);
+
+    if (assignedIds === undefined) {
+        return data;
+    }
+
+    return {
+        ...data,
+        asignadoA: assignedIds
+    };
+};
+
 const toArrayString = (value) => {
     if (!value) return [];
     return Array.isArray(value) ? value : [value];
 };
 
 // Schema para crear tarea
-export const crearTareaSchema = z.object({
+const crearTareaBaseSchema = z.object({
     etapa: etapaEnum,
 
     estado: estadoEnum.optional().default('pendiente'),
@@ -86,6 +146,8 @@ export const crearTareaSchema = z.object({
     citaFinished: z.boolean().optional(),
     designApprovedByAdmin: z.boolean().optional(),
     designApprovedByClient: z.boolean().optional(),
+    etapaActual: z.string().optional(),
+    timelineActual: z.string().optional(),
     sourceType: sourceTypeEnum.optional(),
     sourceId: z.string().optional(),
     cita: citaPayloadSchema,
@@ -96,19 +158,26 @@ export const crearTareaSchema = z.object({
     visita: visitaPayloadSchema,
     // Legacy input keys accepted temporarily.
     sourceCitaId: z.string().optional(),
-    sourceDisenoId: z.string().optional()
+    sourceDisenoId: z.string().optional(),
+    pagos: pagosPayloadSchema,
+    inversion: inversionPayloadSchema,
+    inversionTotal: inversionPayloadSchema,
+    seguimientoNota: z.string().optional(),
+    notaSeguimiento: z.string().optional()
 });
 
+export const crearTareaSchema = crearTareaBaseSchema.transform(normalizeTaskAssignmentInput);
+
 // Schema para actualizar tarea
-export const actualizarTareaSchema = z.object({
+const actualizarTareaBaseSchema = z.object({
     etapa: etapaEnum.optional(),
+    stage: etapaEnum.optional(),
 
     estado: estadoEnum.optional(),
+    status: estadoEnum.optional(),
 
-    asignadoA: asignadoASchema,
-    assignedToIds: asignadoASchema,
-    assignedTo: z.union([z.array(z.string()), z.string()]).optional(),
-
+    titulo: z.string().optional(),
+    title: z.string().optional(),
     notas: z.string().optional(),
     prioridad: prioridadEnum.optional(),
     followUpStatus: followUpStatusInputSchema.optional(),
@@ -119,6 +188,8 @@ export const actualizarTareaSchema = z.object({
     citaFinished: z.boolean().optional(),
     designApprovedByAdmin: z.boolean().optional(),
     designApprovedByClient: z.boolean().optional(),
+    etapaActual: z.string().optional(),
+    timelineActual: z.string().optional(),
     sourceType: sourceTypeEnum.optional(),
     sourceId: z.string().optional(),
     cita: citaPayloadSchema,
@@ -131,17 +202,37 @@ export const actualizarTareaSchema = z.object({
     sourceCitaId: z.string().optional(),
     sourceDisenoId: z.string().optional(),
     nombreProyecto: z.string().optional(),
+    project: z.string().optional(),
     fechaLimite: z.union([z.string(), z.number(), z.date()]).nullable().optional(),
+    dueDate: z.union([z.string(), z.number(), z.date()]).nullable().optional(),
     scheduledAt: z.union([z.string(), z.number(), z.date()]).nullable().optional(),
     visitScheduledAt: z.union([z.string(), z.number(), z.date()]).nullable().optional(),
     ubicacion: z.string().optional(),
+    location: z.string().optional(),
     mapsUrl: z.string().optional(),
     wallSpecs: z.array(wallSpecSchema).optional(),
     wallCostEstimate: z.number().nullable().optional(),
     proyectoId: z.string().optional(),
-    proyecto: z.string().optional()
-}).refine(data => Object.keys(data).length > 0, {
+    proyecto: z.string().optional(),
+    pagos: pagosPayloadSchema,
+    inversion: inversionPayloadSchema,
+    inversionTotal: inversionPayloadSchema,
+    seguimientoNota: z.string().optional(),
+    notaSeguimiento: z.string().optional()
+});
+
+export const actualizarTareaSchema = actualizarTareaBaseSchema.refine(data => Object.keys(data).length > 0, {
     message: 'Debe proporcionar al menos un campo para actualizar'
+});
+
+const asignarTareaBaseSchema = z.object({
+    asignadoA: asignadoASchema,
+    assignedToIds: asignadoASchema,
+    assignedTo: z.union([z.array(z.string()), z.string()]).optional()
+});
+
+export const asignarTareaSchema = asignarTareaBaseSchema.transform(normalizeTaskAssignmentInput).refine(data => Object.keys(data).length > 0, {
+    message: 'Debe proporcionar al menos un campo para asignar'
 });
 
 // Schema para cambiar etapa

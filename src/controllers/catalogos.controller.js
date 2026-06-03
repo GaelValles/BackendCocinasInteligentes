@@ -52,10 +52,6 @@ const buildMaterialCatalogFilter = (query = {}, { defaultDisponible = true, forc
     const disponible = parseBooleanQuery(query.disponible, defaultDisponible);
     if (disponible !== undefined) filter.disponible = disponible;
 
-    if (query.categoria) {
-        filter.categoria = new RegExp(`^${escapeRegex(normalizeText(query.categoria))}$`, 'i');
-    }
-
     if (query.proveedor) {
         filter.proveedor = new RegExp(escapeRegex(normalizeText(query.proveedor)), 'i');
     }
@@ -73,7 +69,6 @@ const buildMaterialCatalogFilter = (query = {}, { defaultDisponible = true, forc
             { nombre: qRegex },
             { descripcion: qRegex },
             { idCotizador: qRegex },
-            { categoria: qRegex },
             { proveedor: qRegex }
         ];
     }
@@ -82,7 +77,7 @@ const buildMaterialCatalogFilter = (query = {}, { defaultDisponible = true, forc
         filter.$and = [
             {
                 $or: [
-                    { categoria: /herrajes/i },
+                    { seccion: 'herrajes' },
                     { idCotizador: { $in: HERRAJE_IDS } }
                 ]
             }
@@ -104,7 +99,6 @@ const mapCatalogMaterial = (item) => {
         precioPorMetro: item.precioPorMetro ?? null,
         precioMetroLineal: item.precioPorMetro ?? null,
         descripcion: item.descripcion || '',
-        categoria: item.categoria || '',
         seccion: item.seccion || null,
         proveedor: item.proveedor || '',
         disponible: !!item.disponible,
@@ -128,7 +122,7 @@ export const obtenerMateriales = async (req, res) => {
         }
 
         const materiales = await Materiales.find(filtro)
-            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion disponible categoria seccion proveedor image gama tier')
+            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion disponible seccion proveedor image gama tier')
             .sort({ nombre: 1 })
             .lean();
 
@@ -152,7 +146,7 @@ export const obtenerHerrajes = async (req, res) => {
         });
 
         const herrajes = await Materiales.find(filtro)
-            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion categoria seccion disponible proveedor image gama tier')
+            .select('idCotizador nombre unidadMedida precioPorMetro precioUnitario descripcion seccion disponible proveedor image gama tier')
             .sort({ nombre: 1 })
             .lean();
 

@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+﻿import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
@@ -10,20 +10,12 @@ import { uploadFileToDropbox } from '../libs/dropbox.js';
 import { uploadFileToCloudinary } from '../libs/cloudinary.js';
 import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
 
-const ROLES_ASIGNABLES = ['admin', 'ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
-const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
 const ETAPAS_VALIDAS = ['citas', 'disenos', 'cotizacion', 'contrato'];
 const ESTADOS_VALIDOS = ['pendiente', 'completada'];
 const PRIORIDADES_VALIDAS = ['alta', 'media', 'baja'];
 const FOLLOWUP_STATUS_VALIDOS = ['pendiente', 'confirmado', 'inactivo'];
 const SOURCE_TYPES_VALIDOS = ['cita', 'diseno'];
-const ETAPA_ACTUAL_VALIDAS = [
-    'Diseño Aprobado',
-    'Materiales en Taller',
-    'Corte CNC',
-    'Ensamble',
-    'Instalación Final'
-];
+const ROLES_OPERATIVOS = ['ingeniero', 'empleado', 'empleado_general', 'staff'];
 
 const PROCESS_FILE_TYPE_ALIASES = {
     levantamiento_detallado: 'levantamiento_detallado',
@@ -268,13 +260,65 @@ const shouldUseDropboxForDesign = (fileName = '', tipo = '') => {
         return true;
     }
 
-    return name.includes('diseno') || name.includes('diseño') || name.includes('render');
+    return name.includes('diseno') || name.includes('dise├▒o') || name.includes('render');
 };
 
 const shouldForceDropboxByTaskContext = async (taskId) => {
     if (!mongoose.Types.ObjectId.isValid(taskId)) return false;
     const task = await Tarea.findById(taskId, { etapa: 1, sourceType: 1 }).lean();
     return Boolean(task && (task.etapa === 'disenos' || task.sourceType === 'diseno'));
+};
+
+const runtimeUploadsBase = process.env.VERCEL ? '/tmp' : process.cwd();
+const uploadsDir = path.join(runtimeUploadsBase, 'uploads', 'tasks');
+
+const ensureUploadsDir = () => {
+    if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+};
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        try {
+            ensureUploadsDir();
+            cb(null, uploadsDir);
+        } catch (error) {
+            cb(error);
+        }
+    },
+    filename: (req, file, cb) => {
+        const safeOriginalName = path.basename(String(file.originalname || 'archivo'))
+            .replace(/[^a-zA-Z0-9._-]/g, '_');
+        cb(null, `${Date.now()}-${safeOriginalName}`);
+    }
+});
+
+export const upload = multer({ storage });
+
+const isStaff = (req) => ['admin', 'arquitecto'].includes(req.admin?.rol);
+const isOperativo = (req) => ROLES_OPERATIVOS.includes(req.admin?.rol);
+
+const canViewOrEditTask = (req, tarea) => {
+    if (isStaff(req)) return true;
+    if (!isOperativo(req)) return false;
+    const assigned = Array.isArray(tarea.asignadoA) ? tarea.asignadoA.map(String) : [];
+    return assigned.includes(String(req.admin._id));
+};
+
+const normalizeAssignedIds = (asignadoA) => {
+    if (!asignadoA) return [];
+
+    const raw = Array.isArray(asignadoA) ? asignadoA : [asignadoA];
+    return raw
+        .map((item) => {
+            if (!item) return null;
+            if (typeof item === 'string') return item;
+            if (typeof item === 'object') return item._id || null;
+            return null;
+        })
+        .filter(Boolean)
+        .map(String);
 };
 
 const normalizeDateOrNull = (value) => {
@@ -288,9 +332,26 @@ const validateDateInput = (fieldName, value) => {
     if (value === undefined) return { ok: true, value: undefined };
     const parsed = normalizeDateOrNull(value);
     if (parsed === undefined) {
-        return { ok: false, message: `${fieldName} inválida. Debe ser una fecha válida (ISO recomendado)` };
+        return { ok: false, message: `${fieldName} inv├ílida. Debe ser una fecha v├ílida (ISO recomendado)` };
     }
     return { ok: true, value: parsed };
+};
+
+const resolveAssignedUsers = async (ids) => {
+    if (!ids.length) return [];
+
+    for (const id of ids) {
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return { error: `ID de usuario asignado inv├ílido: ${id}` };
+        }
+    }
+
+    const users = await Admin.find({ _id: { $in: ids } }, 'nombre');
+    if (users.length !== ids.length) {
+        return { error: 'Uno o m├ís usuarios asignados no existen' };
+    }
+
+    return users;
 };
 
 const normalizeSource = (body = {}) => {
@@ -298,28 +359,23 @@ const normalizeSource = (body = {}) => {
         || (body.sourceCitaId ? 'cita' : null)
         || (body.sourceDisenoId ? 'diseno' : null);
 
-    const sourceId = sourceType === 'cita'
-        ? String(body.sourceId || body.sourceCitaId || '').trim()
-        : sourceType === 'diseno'
-            ? String(body.sourceId || body.sourceDisenoId || '').trim()
-            : String(body.sourceId || '').trim();
+    const sourceId = body.sourceId
+        || body.sourceCitaId
+        || body.sourceDisenoId
+        || null;
 
     return {
         sourceType: sourceType || null,
-        sourceId: sourceId || null
+        sourceId: sourceId ? String(sourceId) : null
     };
 };
 
 const normalizeCitaData = (raw = {}) => {
     if (!raw || typeof raw !== 'object') return null;
-
-    const fechaAgendadaRaw = raw.fechaAgendada;
-    const fechaAgendada = fechaAgendadaRaw !== undefined ? normalizeDateOrNull(fechaAgendadaRaw) : null;
-
     return {
-        fechaAgendada,
+        fechaAgendada: raw.fechaAgendada ? new Date(raw.fechaAgendada) : null,
         nombreCliente: raw.nombreCliente || '',
-        correoCliente: String(raw.correoCliente || '').trim().toLowerCase(),
+        correoCliente: raw.correoCliente || '',
         telefonoCliente: raw.telefonoCliente || '',
         ubicacion: raw.ubicacion || '',
         informacionAdicional: raw.informacionAdicional || ''
@@ -379,45 +435,6 @@ const normalizeVisitaData = (raw = {}) => {
     };
 };
 
-const resolveVisitStateFromPayload = ({
-    visita,
-    visitScheduledAt,
-    designApprovedByAdmin,
-    designApprovedByClient,
-    currentVisita = null
-} = {}) => {
-    const visitaParsed = normalizeVisitaData(visita);
-    const current = currentVisita && typeof currentVisita === 'object' ? currentVisita : {};
-
-    const fechaProgramada = visitaParsed?.fechaProgramada !== undefined
-        ? visitaParsed.fechaProgramada
-        : (visitScheduledAt !== undefined ? normalizeDateOrNull(visitScheduledAt) : (current.fechaProgramada ?? null));
-
-    const aprobadaPorAdmin = visitaParsed?.aprobadaPorAdmin !== undefined
-        ? Boolean(visitaParsed.aprobadaPorAdmin)
-        : (designApprovedByAdmin !== undefined ? Boolean(designApprovedByAdmin) : Boolean(current.aprobadaPorAdmin ?? false));
-
-    const aprobadaPorCliente = visitaParsed?.aprobadaPorCliente !== undefined
-        ? Boolean(visitaParsed.aprobadaPorCliente)
-        : (designApprovedByClient !== undefined ? Boolean(designApprovedByClient) : Boolean(current.aprobadaPorCliente ?? false));
-
-    const actualizadaEn = visitaParsed?.actualizadaEn !== undefined
-        ? visitaParsed.actualizadaEn
-        : ((visita !== undefined || visitScheduledAt !== undefined || designApprovedByAdmin !== undefined || designApprovedByClient !== undefined)
-            ? new Date()
-            : (current.actualizadaEn ?? null));
-
-    return {
-        visitaParsed,
-        value: {
-            fechaProgramada,
-            aprobadaPorAdmin,
-            aprobadaPorCliente,
-            actualizadaEn
-        }
-    };
-};
-
 const normalizeFileUrl = (url = '', baseUrl = '') => {
     const value = String(url || '').trim();
     if (!value) return '';
@@ -462,233 +479,11 @@ const resolveFollowUpStatusFromPayload = (payload = {}) => {
     };
 };
 
-const normalizePagoDetalle = (current = {}, incoming = {}) => {
-    const currentSafe = current && typeof current === 'object' ? current : {};
-    const incomingSafe = incoming && typeof incoming === 'object' ? incoming : {};
-
-    const amountRaw = incomingSafe.amount !== undefined ? incomingSafe.amount : currentSafe.amount;
-    const amountNumber = Number(amountRaw ?? 0);
-    if (Number.isNaN(amountNumber) || amountNumber < 0) {
-        return { ok: false, message: 'pagos.*.amount debe ser numérico y mayor o igual a 0' };
-    }
-
-    const dateRaw = incomingSafe.date !== undefined ? incomingSafe.date : currentSafe.date;
-    const date = dateRaw === undefined || dateRaw === null ? '' : String(dateRaw);
-
-    const receiptLabelRaw = incomingSafe.receiptLabel !== undefined ? incomingSafe.receiptLabel : currentSafe.receiptLabel;
-    const receiptLabel = String(receiptLabelRaw || 'Ver recibo');
-
-    const receiptImageRaw = incomingSafe.receiptImage !== undefined ? incomingSafe.receiptImage : currentSafe.receiptImage;
-    const receiptImage = String(receiptImageRaw || '');
-
-    return {
-        ok: true,
-        value: {
-            amount: amountNumber,
-            date,
-            receiptLabel,
-            receiptImage
-        }
-    };
-};
-
-const buildPagosState = (current = {}, incoming = undefined) => {
-    const base = {
-        anticipo: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
-        segundoPago: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
-        liquidacion: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' }
-    };
-
-    const currentSafe = current && typeof current === 'object' ? current : {};
-    const mergedCurrent = {
-        anticipo: { ...base.anticipo, ...(currentSafe.anticipo || {}) },
-        segundoPago: { ...base.segundoPago, ...(currentSafe.segundoPago || {}) },
-        liquidacion: { ...base.liquidacion, ...(currentSafe.liquidacion || {}) }
-    };
-
-    if (incoming === undefined || incoming === null) {
-        return { ok: true, value: mergedCurrent };
-    }
-
-    if (typeof incoming !== 'object' || Array.isArray(incoming)) {
-        return { ok: false, message: 'pagos debe ser un objeto válido' };
-    }
-
-    const next = {};
-    for (const key of ['anticipo', 'segundoPago', 'liquidacion']) {
-        const detail = normalizePagoDetalle(mergedCurrent[key], incoming[key]);
-        if (!detail.ok) {
-            return detail;
-        }
-        next[key] = detail.value;
-    }
-
-    return { ok: true, value: next };
-};
-
-const resolveInversionFromPayload = ({ inversion, inversionTotal } = {}) => {
-    const normalizeInput = (raw, fieldName) => {
-        if (raw === undefined || raw === null || raw === '') {
-            return { hasValue: false, value: undefined };
-        }
-
-        const numeric = Number(raw);
-        if (!Number.isFinite(numeric) || numeric < 0) {
-            return { error: `${fieldName} debe ser numérico y mayor o igual a 0` };
-        }
-
-        return { hasValue: true, value: numeric };
-    };
-
-    const canonical = normalizeInput(inversion, 'inversion');
-    if (canonical.error) return canonical;
-
-    const alias = normalizeInput(inversionTotal, 'inversionTotal');
-    if (alias.error) return alias;
-
-    if (canonical.hasValue && alias.hasValue && canonical.value !== alias.value) {
-        return { error: 'inversion e inversionTotal tienen valores en conflicto' };
-    }
-
-    if (canonical.hasValue) return { value: canonical.value, hasValue: true };
-    if (alias.hasValue) return { value: alias.value, hasValue: true };
-    return { value: undefined, hasValue: false };
-};
-
-const calculatePagosSummary = (pagos = {}) => {
-    const slots = ['anticipo', 'segundoPago', 'liquidacion'];
-    const totalPagado = slots.reduce((acc, slot) => {
-        const amount = Number(pagos?.[slot]?.amount ?? 0);
-        return acc + (Number.isFinite(amount) ? amount : 0);
-    }, 0);
-
-    return { totalPagado };
-};
-
-const resolveSeguimientoNotaFromPayload = ({ seguimientoNota, notaSeguimiento } = {}) => {
-    const hasSeguimientoNota = seguimientoNota !== undefined;
-    const hasNotaSeguimiento = notaSeguimiento !== undefined;
-
-    if (!hasSeguimientoNota && !hasNotaSeguimiento) {
-        return { ok: true, value: undefined };
-    }
-
-    if (hasSeguimientoNota && hasNotaSeguimiento && String(seguimientoNota || '') !== String(notaSeguimiento || '')) {
-        return {
-            ok: false,
-            message: 'seguimientoNota y notaSeguimiento tienen valores en conflicto'
-        };
-    }
-
-    return {
-        ok: true,
-        value: String((hasSeguimientoNota ? seguimientoNota : notaSeguimiento) || '')
-    };
-};
-
-const resolveEtapaActualFromPayload = ({ etapaActual, timelineActual } = {}) => {
-    const hasEtapaActual = etapaActual !== undefined;
-    const hasTimelineActual = timelineActual !== undefined;
-
-    if (!hasEtapaActual && !hasTimelineActual) {
-        return { value: undefined };
-    }
-
-    const resolved = hasEtapaActual ? etapaActual : timelineActual;
-    const normalized = String(resolved || '').trim();
-
-    if (!normalized) {
-        return { value: undefined };
-    }
-
-    if (!ETAPA_ACTUAL_VALIDAS.includes(normalized)) {
-        return {
-            error: `etapaActual inválida. Valores permitidos: ${ETAPA_ACTUAL_VALIDAS.join(', ')}`
-        };
-    }
-
-    return { value: normalized };
-};
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        try {
-            const uploadDir = path.join(process.cwd(), 'uploads', 'tasks');
-            fs.mkdirSync(uploadDir, { recursive: true });
-            cb(null, uploadDir);
-        } catch (error) {
-            cb(error);
-        }
-    },
-    filename: (req, file, cb) => {
-        const safeOriginalName = path.basename(String(file.originalname || 'archivo'))
-            .replace(/[^a-zA-Z0-9._-]/g, '_');
-        cb(null, `${Date.now()}-${safeOriginalName}`);
-    }
-});
-
-export const upload = multer({ storage });
-
-const isStaff = (req) => ['admin', 'arquitecto'].includes(req.admin?.rol);
-const isOperativo = (req) => ROLES_OPERATIVOS.includes(req.admin?.rol);
-
-const canViewOrEditTask = (req, tarea) => {
-    if (isStaff(req)) return true;
-    if (!isOperativo(req)) return false;
-    const assigned = Array.isArray(tarea.asignadoA) ? tarea.asignadoA.map(String) : [];
-    return assigned.includes(String(req.admin._id));
-};
-
-const normalizeAssignedIds = (asignadoA) => {
-    if (!asignadoA) return [];
-
-    const raw = Array.isArray(asignadoA) ? asignadoA : [asignadoA];
-    const normalized = raw
-        .map((item) => {
-            if (!item) return null;
-            if (typeof item === 'string') return item;
-            if (typeof item === 'object') return item._id || item.id || null;
-            return null;
-        })
-        .filter(Boolean)
-        .map(String)
-        .map((id) => id.trim())
-        .filter(Boolean);
-
-    return Array.from(new Set(normalized));
-};
-
-const resolveAssignedUsers = async (assignedIds) => {
-    const normalizedIds = Array.from(new Set((Array.isArray(assignedIds) ? assignedIds : [])
-        .map((id) => String(id || '').trim())
-        .filter(Boolean)));
-
-    if (!normalizedIds.length) {
-        return [];
-    }
-
-    const users = await Admin.find({
-        _id: { $in: normalizedIds },
-        rol: { $in: ROLES_ASIGNABLES },
-        status: true
-    }).select('_id nombre rol status');
-
-    const foundIds = new Set(users.map((user) => String(user._id)));
-    const missingIds = normalizedIds.filter((id) => !foundIds.has(id));
-
-    if (missingIds.length) {
-        return { error: `No se encontraron responsables válidos para: ${missingIds.join(', ')}` };
-    }
-
-    return users;
-};
-
 const mapTask = (tarea, baseUrl = '') => {
     const sourceType = tarea.sourceType
         || (tarea.sourceCitaId ? 'cita' : null)
         || (tarea.sourceDisenoId ? 'diseno' : null);
     const sourceId = tarea.sourceId || tarea.sourceCitaId || tarea.sourceDisenoId || null;
-    const clienteIdResolved = String(tarea.clienteId || '').trim().toUpperCase();
     const citaData = sourceType === 'cita'
         ? {
             fechaAgendada: tarea.cita?.fechaAgendada || null,
@@ -716,16 +511,10 @@ const mapTask = (tarea, baseUrl = '') => {
             key: archivo?.key || '',
             provider: archivo?.provider || 'local',
             mimeType: archivo?.mimeType || '',
-            clienteId: archivo?.clienteId || clienteIdResolved,
+            clienteId: archivo?.clienteId || tarea.clienteId || '',
             createdAt: archivo?.createdAt || null
         }))
         : [];
-
-    const pagosState = buildPagosState(tarea.pagos).value;
-    const inversion = Number.isFinite(Number(tarea.inversion)) ? Number(tarea.inversion) : 0;
-    const etapaActual = String(tarea.etapaActual || '').trim();
-    const { totalPagado } = calculatePagosSummary(pagosState);
-    const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
     const archivosPorTipo = mappedArchivos.reduce((acc, item) => {
         if (!item?.tipo) return acc;
@@ -764,28 +553,13 @@ const mapTask = (tarea, baseUrl = '') => {
     visita: visitaData,
     sourceType,
     sourceId,
-    clientId: clienteIdResolved,
-    codigoCliente: clienteIdResolved,
-    codigo: clienteIdResolved,
     cliente: {
-        _id: tarea.clienteRef || null,
-        id: tarea.clienteRef || null,
-        clienteId: clienteIdResolved,
-        codigo: clienteIdResolved,
         nombre: tarea.cliente?.nombre || citaData?.nombreCliente || '',
         correo: tarea.cliente?.correo || citaData?.correoCliente || '',
         telefono: tarea.cliente?.telefono || citaData?.telefonoCliente || ''
     },
     clienteRef: tarea.clienteRef || null,
-    clienteId: clienteIdResolved,
-    inversion,
-    inversionTotal: inversion,
-    etapaActual,
-    timelineActual: etapaActual,
-    pagos: pagosState,
-    totalPagado,
-    saldoPendiente,
-    seguimientoNota: String(tarea.seguimientoNota || ''),
+    clienteId: tarea.clienteId || '',
     cita: citaData,
     archivos: mappedArchivos,
     archivosPorTipo,
@@ -806,7 +580,7 @@ const pushHistory = (tarea, req, action, changes = {}) => {
 
 const validateEnum = (value, allowed, fieldName) => {
     if (value === undefined) return null;
-    if (!allowed.includes(value)) return `${fieldName} inválido`;
+    if (!allowed.includes(value)) return `${fieldName} inv├ílido`;
     return null;
 };
 
@@ -815,7 +589,7 @@ const resolveProjectName = async (projectIdLike) => {
 
     const projectId = String(projectIdLike);
     if (!mongoose.Types.ObjectId.isValid(projectId)) {
-        return { error: 'ID de proyecto inválido' };
+        return { error: 'ID de proyecto inv├ílido' };
     }
 
     const proyecto = await Proyecto.findById(projectId, 'nombre');
@@ -892,7 +666,7 @@ export const obtenerTarea = async (req, res) => {
         const { id } = req.params;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -942,18 +716,11 @@ export const crearTarea = async (req, res) => {
             cita,
             visita,
             cliente,
-            etapaActual,
-            timelineActual,
             nombreCliente,
             correoCliente,
             telefonoCliente,
             sourceCitaId,
-            sourceDisenoId,
-            pagos,
-            inversion,
-            inversionTotal,
-            seguimientoNota,
-            notaSeguimiento
+            sourceDisenoId
         } = req.body;
 
         const fechaLimiteParsed = validateDateInput('fechaLimite', fechaLimite);
@@ -971,26 +738,26 @@ export const crearTarea = async (req, res) => {
             return res.status(400).json({ success: false, message: visitScheduledAtParsed.message });
         }
 
-        const visitState = resolveVisitStateFromPayload({
-            visita,
-            visitScheduledAt,
-            designApprovedByAdmin,
-            designApprovedByClient
-        });
-        const visitaParsed = visitState.visitaParsed;
+        const visitaParsed = normalizeVisitaData(visita);
         if (visita !== undefined && visitaParsed?.fechaProgramada === undefined && visita?.fechaProgramada !== undefined && visita?.fechaProgramada !== null && visita?.fechaProgramada !== '') {
-            return res.status(400).json({ success: false, message: 'visita.fechaProgramada inválida. Debe ser una fecha válida (ISO recomendado)' });
+            return res.status(400).json({ success: false, message: 'visita.fechaProgramada inv├ílida. Debe ser una fecha v├ílida (ISO recomendado)' });
         }
 
-        const resolvedVisitScheduledAt = visitState.value.fechaProgramada !== undefined
-            ? visitState.value.fechaProgramada
+        const resolvedVisitScheduledAt = visitaParsed?.fechaProgramada !== undefined
+            ? visitaParsed.fechaProgramada
             : visitScheduledAtParsed.value;
 
-        const resolvedApprovedByAdmin = visitState.value.aprobadaPorAdmin;
+        const resolvedApprovedByAdmin = visitaParsed?.aprobadaPorAdmin !== undefined
+            ? Boolean(visitaParsed.aprobadaPorAdmin)
+            : Boolean(designApprovedByAdmin);
 
-        const resolvedApprovedByClient = visitState.value.aprobadaPorCliente;
+        const resolvedApprovedByClient = visitaParsed?.aprobadaPorCliente !== undefined
+            ? Boolean(visitaParsed.aprobadaPorCliente)
+            : Boolean(designApprovedByClient);
 
-        const resolvedVisitaActualizadaEn = visitState.value.actualizadaEn;
+        const resolvedVisitaActualizadaEn = visitaParsed?.actualizadaEn !== undefined
+            ? visitaParsed.actualizadaEn
+            : (resolvedVisitScheduledAt !== null || resolvedApprovedByAdmin || resolvedApprovedByClient ? new Date() : null);
 
         const source = normalizeSource({ sourceType, sourceId, sourceCitaId, sourceDisenoId });
         const incomingCita = cita !== undefined ? normalizeCitaData(cita) : null;
@@ -1002,29 +769,25 @@ export const crearTarea = async (req, res) => {
             telefonoCliente,
             cita: incomingCita
         });
-        const etapaActualResolved = resolveEtapaActualFromPayload({ etapaActual, timelineActual });
-        if (etapaActualResolved.error) {
-            return res.status(400).json({ success: false, message: etapaActualResolved.error });
-        }
 
         if (source.sourceType && !SOURCE_TYPES_VALIDOS.includes(source.sourceType)) {
-            return res.status(400).json({ success: false, message: 'sourceType inválido' });
+            return res.status(400).json({ success: false, message: 'sourceType inv├ílido' });
         }
 
         if (source.sourceType && !source.sourceId) {
-            return res.status(400).json({ success: false, message: 'sourceId es requerido cuando sourceType está definido' });
+            return res.status(400).json({ success: false, message: 'sourceId es requerido cuando sourceType est├í definido' });
         }
 
         if (!ETAPAS_VALIDAS.includes(etapa)) {
-            return res.status(400).json({ success: false, message: 'Etapa inválida' });
+            return res.status(400).json({ success: false, message: 'Etapa inv├ílida' });
         }
 
         if (estado && !ESTADOS_VALIDOS.includes(estado)) {
-            return res.status(400).json({ success: false, message: 'Estado inválido' });
+            return res.status(400).json({ success: false, message: 'Estado inv├ílido' });
         }
 
         if (prioridad && !PRIORIDADES_VALIDAS.includes(prioridad)) {
-            return res.status(400).json({ success: false, message: 'Prioridad inválida' });
+            return res.status(400).json({ success: false, message: 'Prioridad inv├ílida' });
         }
 
         const followUpResolved = resolveFollowUpStatusFromPayload({
@@ -1039,30 +802,7 @@ export const crearTarea = async (req, res) => {
 
         const normalizedFollowUpStatus = followUpResolved.value;
         if (normalizedFollowUpStatus && !FOLLOWUP_STATUS_VALIDOS.includes(normalizedFollowUpStatus)) {
-            return res.status(400).json({ success: false, message: 'followUpStatus inválido' });
-        }
-
-        const normalizedPagos = buildPagosState({}, pagos);
-        if (!normalizedPagos.ok) {
-            return res.status(400).json({ success: false, message: normalizedPagos.message });
-        }
-
-        const inversionResolved = resolveInversionFromPayload({ inversion, inversionTotal });
-        if (inversionResolved.error) {
-            return res.status(400).json({ success: false, message: inversionResolved.error });
-        }
-
-        const targetFollowUpStatus = normalizedFollowUpStatus || 'pendiente';
-        if (inversionResolved.hasValue && targetFollowUpStatus !== 'confirmado') {
-            return res.status(400).json({ success: false, message: 'Solo se permite guardar inversion cuando followUpStatus es confirmado' });
-        }
-        if (etapaActualResolved.value && targetFollowUpStatus !== 'confirmado') {
-            return res.status(400).json({ success: false, message: 'Solo se permite guardar etapaActual cuando followUpStatus es confirmado' });
-        }
-
-        const notaSeguimientoResolved = resolveSeguimientoNotaFromPayload({ seguimientoNota, notaSeguimiento });
-        if (!notaSeguimientoResolved.ok) {
-            return res.status(400).json({ success: false, message: notaSeguimientoResolved.message });
+            return res.status(400).json({ success: false, message: 'followUpStatus inv├ílido' });
         }
 
         const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds);
@@ -1121,10 +861,6 @@ export const crearTarea = async (req, res) => {
             sourceId: source.sourceId,
             cita: normalizedCita,
             cliente: resolvedCliente,
-            pagos: normalizedPagos.value,
-            inversion: inversionResolved.hasValue ? inversionResolved.value : 0,
-            etapaActual: etapaActualResolved.value || tarea.etapaActual || '',
-            seguimientoNota: notaSeguimientoResolved.value || '',
             // Keep legacy IDs synced during transition.
             sourceCitaId: source.sourceType === 'cita' ? source.sourceId : undefined,
             sourceDisenoId: source.sourceType === 'diseno' ? source.sourceId : undefined
@@ -1156,15 +892,8 @@ export const actualizarTarea = async (req, res) => {
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         const { id } = req.params;
 
-        if (!req.admin || req.admin.rol !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                message: 'Solo un admin puede editar tareas'
-            });
-        }
-
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -1172,13 +901,15 @@ export const actualizarTarea = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Tarea no encontrada' });
         }
 
+        if (!canViewOrEditTask(req, tarea)) {
+            return res.status(403).json({ success: false, message: 'No tienes permiso para actualizar esta tarea' });
+        }
+
         const {
             etapa,
-            stage,
             estado,
-            status,
-            titulo,
-            title,
+            asignadoA,
+            assignedToIds,
             notas,
             prioridad,
             followUpStatus,
@@ -1191,130 +922,58 @@ export const actualizarTarea = async (req, res) => {
             designApprovedByClient,
             sourceType,
             sourceId,
-            sourceCitaId,
-            sourceDisenoId,
             cita,
             visita,
             cliente,
-            etapaActual,
-            timelineActual,
             nombreCliente,
             correoCliente,
             telefonoCliente,
+            sourceCitaId,
+            sourceDisenoId,
             nombreProyecto,
-            project,
             fechaLimite,
-            dueDate,
             scheduledAt,
             visitScheduledAt,
             ubicacion,
-            location,
             mapsUrl,
             wallSpecs,
             wallCostEstimate,
             proyecto,
-            proyectoId,
-            pagos,
-            inversion,
-            inversionTotal,
-            seguimientoNota,
-            notaSeguimiento
-        } = req.body || {};
+            proyectoId
+        } = req.body;
 
-        const incomingFields = [
-            etapa,
-            stage,
-            estado,
-            status,
-            titulo,
-            title,
-            notas,
-            prioridad,
-            followUpStatus,
-            seguimiento,
-            estadoSeguimiento,
-            followUpEnteredAt,
-            citaStarted,
-            citaFinished,
-            designApprovedByAdmin,
-            designApprovedByClient,
-            sourceType,
-            sourceId,
-            sourceCitaId,
-            sourceDisenoId,
-            cita,
-            visita,
-            cliente,
-            etapaActual,
-            timelineActual,
-            nombreCliente,
-            correoCliente,
-            telefonoCliente,
-            nombreProyecto,
-            project,
-            fechaLimite,
-            dueDate,
-            scheduledAt,
-            visitScheduledAt,
-            ubicacion,
-            location,
-            mapsUrl,
-            wallSpecs,
-            wallCostEstimate,
-            proyecto,
-            proyectoId,
-            pagos,
-            inversion,
-            inversionTotal,
-            seguimientoNota,
-            notaSeguimiento
-        ];
-
-        if (!incomingFields.some((value) => value !== undefined)) {
-            return res.status(400).json({
-                success: false,
-                message: 'Debe proporcionar al menos un campo para actualizar'
-            });
+        const fechaLimiteParsed = validateDateInput('fechaLimite', fechaLimite);
+        if (!fechaLimiteParsed.ok) {
+            return res.status(400).json({ success: false, message: fechaLimiteParsed.message });
         }
 
-        const etapaNormalizada = etapa ?? stage;
-        const estadoNormalizado = estado ?? status;
-        const fechaLimiteNormalizada = fechaLimite ?? dueDate;
-        const ubicacionNormalizada = ubicacion ?? location;
-        const nombreProyectoNormalizado = nombreProyecto ?? project ?? titulo ?? title;
-        const proyectoRefNormalizado = proyectoId
-            ?? (proyecto && mongoose.Types.ObjectId.isValid(String(proyecto)) ? proyecto : undefined)
-            ?? (project && !nombreProyectoNormalizado && mongoose.Types.ObjectId.isValid(String(project)) ? project : undefined);
-
-        if (etapaNormalizada !== undefined && !ETAPAS_VALIDAS.includes(etapaNormalizada)) {
-            return res.status(400).json({ success: false, message: 'Etapa inválida' });
+        const scheduledAtParsed = validateDateInput('scheduledAt', scheduledAt);
+        if (!scheduledAtParsed.ok) {
+            return res.status(400).json({ success: false, message: scheduledAtParsed.message });
         }
 
-        if (estadoNormalizado !== undefined && !ESTADOS_VALIDOS.includes(estadoNormalizado)) {
-            return res.status(400).json({ success: false, message: 'Estado inválido' });
+        const visitScheduledAtParsed = validateDateInput('visitScheduledAt', visitScheduledAt);
+        if (!visitScheduledAtParsed.ok) {
+            return res.status(400).json({ success: false, message: visitScheduledAtParsed.message });
+        }
+
+        const visitaParsed = normalizeVisitaData(visita);
+        if (visita !== undefined && visitaParsed?.fechaProgramada === undefined && visita?.fechaProgramada !== undefined && visita?.fechaProgramada !== null && visita?.fechaProgramada !== '') {
+            return res.status(400).json({ success: false, message: 'visita.fechaProgramada inv├ílida. Debe ser una fecha v├ílida (ISO recomendado)' });
+        }
+
+        const source = normalizeSource({ sourceType, sourceId, sourceCitaId, sourceDisenoId });
+
+        if (etapa !== undefined && !ETAPAS_VALIDAS.includes(etapa)) {
+            return res.status(400).json({ success: false, message: 'Etapa inv├ílida' });
+        }
+
+        if (estado !== undefined && !ESTADOS_VALIDOS.includes(estado)) {
+            return res.status(400).json({ success: false, message: 'Estado inv├ílido' });
         }
 
         if (prioridad !== undefined && !PRIORIDADES_VALIDAS.includes(prioridad)) {
-            return res.status(400).json({ success: false, message: 'Prioridad inválida' });
-        }
-
-        const dateFields = [
-            ['fechaLimite', fechaLimiteNormalizada],
-            ['scheduledAt', scheduledAt],
-            ['visitScheduledAt', visitScheduledAt]
-        ];
-
-        for (const [fieldName, value] of dateFields) {
-            if (value === undefined) continue;
-            if (value === null || value === '') {
-                tarea[fieldName] = null;
-                continue;
-            }
-            const parsed = new Date(value);
-            if (Number.isNaN(parsed.getTime())) {
-                return res.status(400).json({ success: false, message: `${fieldName} inválida` });
-            }
-            tarea[fieldName] = parsed;
+            return res.status(400).json({ success: false, message: 'Prioridad inv├ílida' });
         }
 
         const followUpResolved = resolveFollowUpStatusFromPayload({
@@ -1322,124 +981,41 @@ export const actualizarTarea = async (req, res) => {
             seguimiento,
             estadoSeguimiento
         });
+
         if (followUpResolved.error) {
             return res.status(400).json({ success: false, message: followUpResolved.error });
         }
+
         const normalizedFollowUpStatus = followUpResolved.value;
         if (normalizedFollowUpStatus !== undefined && !FOLLOWUP_STATUS_VALIDOS.includes(normalizedFollowUpStatus)) {
-            return res.status(400).json({ success: false, message: 'followUpStatus inválido' });
+            return res.status(400).json({ success: false, message: 'followUpStatus inv├ílido' });
         }
 
-        const resolvedSourceType = sourceType ?? (sourceCitaId ? 'cita' : sourceDisenoId ? 'diseno' : undefined);
-        const resolvedSourceId = sourceId ?? sourceCitaId ?? sourceDisenoId;
-        if (resolvedSourceType !== undefined && resolvedSourceType !== null && !SOURCE_TYPES_VALIDOS.includes(resolvedSourceType)) {
-            return res.status(400).json({ success: false, message: 'sourceType inválido' });
-        }
-        if (resolvedSourceType !== undefined && resolvedSourceType !== null && !resolvedSourceId) {
-            return res.status(400).json({ success: false, message: 'sourceId es requerido cuando sourceType está definido' });
-        }
-
-        const normalizedPagos = buildPagosState(tarea.pagos, pagos);
-        if (!normalizedPagos.ok) {
-            return res.status(400).json({ success: false, message: normalizedPagos.message });
-        }
-
-        const inversionResolved = resolveInversionFromPayload({ inversion, inversionTotal });
-        if (inversionResolved.error) {
-            return res.status(400).json({ success: false, message: inversionResolved.error });
-        }
-        const etapaActualResolved = resolveEtapaActualFromPayload({ etapaActual, timelineActual });
-        if (etapaActualResolved.error) {
-            return res.status(400).json({ success: false, message: etapaActualResolved.error });
-        }
-
-        const targetFollowUpStatus = normalizedFollowUpStatus !== undefined
-            ? normalizedFollowUpStatus
-            : tarea.followUpStatus;
-        if (inversionResolved.hasValue && targetFollowUpStatus !== 'confirmado') {
-            return res.status(400).json({ success: false, message: 'Solo se permite guardar inversion cuando followUpStatus es confirmado' });
-        }
-        if (etapaActualResolved.value && targetFollowUpStatus !== 'confirmado') {
-            return res.status(400).json({ success: false, message: 'Solo se permite guardar etapaActual cuando followUpStatus es confirmado' });
-        }
-
-        const notaSeguimientoResolved = resolveSeguimientoNotaFromPayload({ seguimientoNota, notaSeguimiento });
-        if (!notaSeguimientoResolved.ok) {
-            return res.status(400).json({ success: false, message: notaSeguimientoResolved.message });
-        }
-
-        const visitState = resolveVisitStateFromPayload({
-            visita,
-            visitScheduledAt,
-            designApprovedByAdmin,
-            designApprovedByClient,
-            currentVisita: tarea.visita
-        });
-
-        const normalizedCita = cita !== undefined ? normalizeCitaData(cita) : undefined;
-        const resolvedCliente = cliente !== undefined || nombreCliente !== undefined || correoCliente !== undefined || telefonoCliente !== undefined
-            ? resolveClienteData({
-                cliente,
-                nombreCliente,
-                correoCliente,
-                telefonoCliente,
-                cita: normalizedCita !== undefined ? normalizedCita : tarea.cita
-            })
-            : undefined;
-
-        const projectResult = proyectoRefNormalizado !== undefined
-            ? await resolveProjectName(proyectoRefNormalizado)
-            : null;
-        if (projectResult?.error) {
-            return res.status(400).json({ success: false, message: projectResult.error });
+        if (source.sourceType && !SOURCE_TYPES_VALIDOS.includes(source.sourceType)) {
+            return res.status(400).json({ success: false, message: 'sourceType inv├ílido' });
         }
 
         const before = {
             etapa: tarea.etapa,
             estado: tarea.estado,
-            asignadoA: Array.isArray(tarea.asignadoA) ? [...tarea.asignadoA] : [],
             prioridad: tarea.prioridad,
             followUpStatus: tarea.followUpStatus
         };
 
-        if (etapaNormalizada !== undefined) tarea.etapa = etapaNormalizada;
-        if (estadoNormalizado !== undefined) tarea.estado = estadoNormalizado;
-        if (notas !== undefined) tarea.notas = String(notas || '');
+        if (etapa !== undefined) tarea.etapa = etapa;
+        if (estado !== undefined) tarea.estado = estado;
+        if (notas !== undefined) tarea.notas = notas;
         if (prioridad !== undefined) tarea.prioridad = prioridad;
         if (normalizedFollowUpStatus !== undefined) tarea.followUpStatus = normalizedFollowUpStatus;
         if (followUpEnteredAt !== undefined) tarea.followUpEnteredAt = followUpEnteredAt;
-        if (citaStarted !== undefined) tarea.citaStarted = Boolean(citaStarted);
-        if (citaFinished !== undefined) tarea.citaFinished = Boolean(citaFinished);
-        tarea.designApprovedByAdmin = visitState.value.aprobadaPorAdmin;
-        tarea.designApprovedByClient = visitState.value.aprobadaPorCliente;
-        tarea.visitScheduledAt = visitState.value.fechaProgramada ?? null;
-        tarea.visita = {
-            fechaProgramada: visitState.value.fechaProgramada ?? null,
-            aprobadaPorAdmin: visitState.value.aprobadaPorAdmin,
-            aprobadaPorCliente: visitState.value.aprobadaPorCliente,
-            actualizadaEn: visitState.value.actualizadaEn
-        };
-        if (resolvedSourceType !== undefined) tarea.sourceType = resolvedSourceType;
-        if (resolvedSourceId !== undefined) tarea.sourceId = resolvedSourceId ? String(resolvedSourceId) : null;
-        if (resolvedSourceType === 'cita') tarea.sourceCitaId = resolvedSourceId ? String(resolvedSourceId) : undefined;
-        if (resolvedSourceType === 'diseno') tarea.sourceDisenoId = resolvedSourceId ? String(resolvedSourceId) : undefined;
-        if (normalizedCita !== undefined) tarea.cita = normalizedCita;
-        if (resolvedCliente !== undefined) tarea.cliente = resolvedCliente;
-        if (nombreProyectoNormalizado !== undefined) tarea.nombreProyecto = String(nombreProyectoNormalizado || '');
-        if (wallSpecs !== undefined) tarea.wallSpecs = Array.isArray(wallSpecs) ? wallSpecs : [];
-        if (wallCostEstimate !== undefined) tarea.wallCostEstimate = wallCostEstimate ?? null;
-        if (ubicacionNormalizada !== undefined) tarea.ubicacion = String(ubicacionNormalizada || '');
-        if (mapsUrl !== undefined) tarea.mapsUrl = String(mapsUrl || '');
-        if (normalizedPagos !== undefined) tarea.pagos = normalizedPagos.value;
-        if (inversionResolved.hasValue) tarea.inversion = inversionResolved.value;
-        if (etapaActualResolved.value !== undefined) tarea.etapaActual = etapaActualResolved.value;
-        if (notaSeguimientoResolved.value !== undefined) tarea.seguimientoNota = notaSeguimientoResolved.value;
-        if (projectResult) {
-            tarea.proyectoId = projectResult.proyectoId;
-            if (nombreProyectoNormalizado === undefined) tarea.nombreProyecto = projectResult.nombreProyecto || tarea.nombreProyecto;
-        }
 
-        if (normalizedFollowUpStatus === 'pendiente' && tarea.etapa === 'contrato' && followUpEnteredAt === undefined) {
+        // Reactivation business rule: if task goes back to pendiente in contrato,
+        // refresh follow-up entry time unless frontend explicitly provided one.
+        if (
+            normalizedFollowUpStatus === 'pendiente'
+            && tarea.etapa === 'contrato'
+            && followUpEnteredAt === undefined
+        ) {
             tarea.followUpEnteredAt = Date.now();
             tarea.followUpReminderStepsSent = [];
             tarea.followUpLastReminderAt = null;
@@ -1449,94 +1025,120 @@ export const actualizarTarea = async (req, res) => {
             tarea.followUpReminderStepsSent = [];
             tarea.followUpLastReminderAt = null;
         }
+        if (citaStarted !== undefined) tarea.citaStarted = Boolean(citaStarted);
+        if (citaFinished !== undefined) tarea.citaFinished = Boolean(citaFinished);
+        if (designApprovedByAdmin !== undefined) tarea.designApprovedByAdmin = Boolean(designApprovedByAdmin);
+        if (designApprovedByClient !== undefined) tarea.designApprovedByClient = Boolean(designApprovedByClient);
 
-        if (etapaNormalizada !== undefined && etapaNormalizada === 'contrato' && before.etapa !== 'contrato' && tarea.followUpStatus === 'pendiente' && followUpEnteredAt === undefined) {
+        if (sourceType !== undefined || sourceId !== undefined || sourceCitaId !== undefined || sourceDisenoId !== undefined) {
+            if (source.sourceType && !source.sourceId) {
+                return res.status(400).json({ success: false, message: 'sourceId es requerido cuando sourceType est├í definido' });
+            }
+            tarea.sourceType = source.sourceType;
+            tarea.sourceId = source.sourceId;
+            tarea.sourceCitaId = source.sourceType === 'cita' ? source.sourceId : undefined;
+            tarea.sourceDisenoId = source.sourceType === 'diseno' ? source.sourceId : undefined;
+        }
+
+        if (cita !== undefined) {
+            tarea.cita = normalizeCitaData(cita);
+        }
+
+        if (
+            cliente !== undefined
+            || nombreCliente !== undefined
+            || correoCliente !== undefined
+            || telefonoCliente !== undefined
+            || cita !== undefined
+        ) {
+            tarea.cliente = resolveClienteData({
+                cliente: cliente !== undefined ? cliente : tarea.cliente,
+                nombreCliente,
+                correoCliente,
+                telefonoCliente,
+                cita: cita !== undefined ? tarea.cita : undefined
+            });
+        }
+
+        if (nombreProyecto !== undefined) tarea.nombreProyecto = nombreProyecto || '';
+        if (fechaLimite !== undefined) tarea.fechaLimite = fechaLimiteParsed.value;
+        if (scheduledAt !== undefined) tarea.scheduledAt = scheduledAtParsed.value;
+        if (visitScheduledAt !== undefined) tarea.visitScheduledAt = visitScheduledAtParsed.value;
+
+        const shouldTouchVisita = visita !== undefined
+            || visitScheduledAt !== undefined
+            || designApprovedByAdmin !== undefined
+            || designApprovedByClient !== undefined;
+
+        if (shouldTouchVisita) {
+            tarea.visita = tarea.visita || {};
+
+            if (visitaParsed?.fechaProgramada !== undefined) {
+                tarea.visitScheduledAt = visitaParsed.fechaProgramada;
+            }
+
+            if (visitaParsed?.aprobadaPorAdmin !== undefined) {
+                tarea.designApprovedByAdmin = Boolean(visitaParsed.aprobadaPorAdmin);
+            }
+
+            if (visitaParsed?.aprobadaPorCliente !== undefined) {
+                tarea.designApprovedByClient = Boolean(visitaParsed.aprobadaPorCliente);
+            }
+
+            tarea.visita.fechaProgramada = tarea.visitScheduledAt ?? null;
+            tarea.visita.aprobadaPorAdmin = Boolean(tarea.designApprovedByAdmin);
+            tarea.visita.aprobadaPorCliente = Boolean(tarea.designApprovedByClient);
+            tarea.visita.actualizadaEn = visitaParsed?.actualizadaEn !== undefined
+                ? visitaParsed.actualizadaEn
+                : new Date();
+        }
+
+        if (ubicacion !== undefined) tarea.ubicacion = ubicacion || '';
+        if (mapsUrl !== undefined) tarea.mapsUrl = mapsUrl || '';
+        if (wallSpecs !== undefined) tarea.wallSpecs = Array.isArray(wallSpecs) ? wallSpecs : [];
+        if (wallCostEstimate !== undefined) tarea.wallCostEstimate = wallCostEstimate ?? null;
+
+        if (asignadoA !== undefined || assignedToIds !== undefined) {
+            const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds);
+            const assignedUsers = await resolveAssignedUsers(assignedIds);
+            if (assignedUsers.error) {
+                return res.status(404).json({ success: false, message: assignedUsers.error });
+            }
+            tarea.asignadoA = assignedIds;
+            tarea.asignadoANombre = assignedUsers.map((u) => u.nombre);
+        }
+
+        if (proyecto !== undefined || proyectoId !== undefined) {
+            const projectResult = await resolveProjectName(proyectoId || proyecto);
+            if (projectResult.error) {
+                return res.status(400).json({ success: false, message: projectResult.error });
+            }
+            tarea.proyectoId = projectResult.proyectoId;
+            if (!nombreProyecto) {
+                tarea.nombreProyecto = projectResult.nombreProyecto || tarea.nombreProyecto;
+            }
+        }
+
+        if (
+            etapa !== undefined
+            && etapa === 'contrato'
+            && before.etapa !== 'contrato'
+            && tarea.followUpStatus === 'pendiente'
+            && followUpEnteredAt === undefined
+        ) {
             tarea.followUpEnteredAt = Date.now();
             tarea.followUpReminderStepsSent = [];
             tarea.followUpLastReminderAt = null;
         }
 
-        pushHistory(tarea, req, 'update', {
-            before,
-            after: {
-                etapa: tarea.etapa,
-                estado: tarea.estado,
-                asignadoA: tarea.asignadoA,
-                prioridad: tarea.prioridad,
-                followUpStatus: tarea.followUpStatus
-            }
-        });
-
+        pushHistory(tarea, req, 'update', { before, after: { etapa: tarea.etapa, estado: tarea.estado, prioridad: tarea.prioridad, followUpStatus: tarea.followUpStatus } });
         await tarea.save();
         await upsertTrackingAccessFromTarea(tarea);
 
-        return res.status(200).json({
-            success: true,
-            message: 'Tarea actualizada exitosamente',
-            data: mapTask(tarea, baseUrl)
-        });
+        return res.json({ success: true, message: 'Tarea actualizada exitosamente', data: mapTask(tarea, baseUrl) });
     } catch (error) {
         console.error('Error al actualizar tarea:', error);
         return res.status(500).json({ success: false, message: 'Error al actualizar tarea', error: error.message });
-    }
-};
-
-export const asignarTrabajadoresTarea = async (req, res) => {
-    try {
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const { id } = req.params;
-        const { asignadoA, assignedToIds, assignedTo } = req.body || {};
-
-        if (!req.admin || req.admin.rol !== 'admin') {
-            return res.status(403).json({ success: false, message: 'Solo un admin puede asignar trabajadores' });
-        }
-
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
-        }
-
-        const tarea = await Tarea.findById(id);
-        if (!tarea) {
-            return res.status(404).json({ success: false, message: 'Tarea no encontrada' });
-        }
-
-        const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds ?? assignedTo);
-        if (!assignedIds.length) {
-            return res.status(400).json({ success: false, message: 'Debe proporcionar al menos un responsable' });
-        }
-
-        const assignedUsers = await resolveAssignedUsers(assignedIds);
-        if (assignedUsers.error) {
-            return res.status(404).json({ success: false, message: assignedUsers.error });
-        }
-
-        const before = {
-            asignadoA: Array.isArray(tarea.asignadoA) ? [...tarea.asignadoA] : [],
-            asignadoANombre: Array.isArray(tarea.asignadoANombre) ? [...tarea.asignadoANombre] : []
-        };
-
-        tarea.asignadoA = assignedIds;
-        tarea.asignadoANombre = assignedUsers.map((user) => user.nombre);
-
-        pushHistory(tarea, req, 'assign_workers', {
-            before,
-            after: {
-                asignadoA: tarea.asignadoA,
-                asignadoANombre: tarea.asignadoANombre
-            }
-        });
-
-        await tarea.save();
-        await upsertTrackingAccessFromTarea(tarea);
-
-        return res.status(200).json({
-            success: true,
-            message: 'Trabajadores asignados exitosamente',
-            data: mapTask(tarea, baseUrl)
-        });
-    } catch (error) {
-        console.error('Error al asignar trabajadores a la tarea:', error);
-        return res.status(500).json({ success: false, message: 'Error al asignar trabajadores', error: error.message });
     }
 };
 
@@ -1547,11 +1149,11 @@ export const cambiarEtapa = async (req, res) => {
         const { etapa } = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         if (!ETAPAS_VALIDAS.includes(etapa)) {
-            return res.status(400).json({ success: false, message: 'Etapa inválida' });
+            return res.status(400).json({ success: false, message: 'Etapa inv├ílida' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -1587,11 +1189,11 @@ export const cambiarEstado = async (req, res) => {
         const { estado } = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         if (!ESTADOS_VALIDOS.includes(estado)) {
-            return res.status(400).json({ success: false, message: 'Estado inválido' });
+            return res.status(400).json({ success: false, message: 'Estado inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -1620,7 +1222,7 @@ export const agregarArchivos = async (req, res) => {
         let { archivos } = req.body || {};
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -1721,7 +1323,7 @@ export const eliminarTarea = async (req, res) => {
         const { id } = req.params;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);
@@ -1746,7 +1348,7 @@ export const actualizarNotas = async (req, res) => {
         const { notas } = req.body;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+            return res.status(400).json({ success: false, message: 'ID de tarea inv├ílido' });
         }
 
         const tarea = await Tarea.findById(id);

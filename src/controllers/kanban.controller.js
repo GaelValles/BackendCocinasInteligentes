@@ -12,6 +12,16 @@ const normalizeFileUrl = (url = '', baseUrl = '') => {
     return value;
 };
 
+const calculatePagosSummary = (pagos = {}) => {
+    const slots = ['anticipo', 'segundoPago', 'liquidacion'];
+    const totalPagado = slots.reduce((acc, slot) => {
+        const amount = Number(pagos?.[slot]?.amount ?? 0);
+        return acc + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
+
+    return { totalPagado };
+};
+
 const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
     const sourceType = item.sourceType
         || (item.sourceCitaId ? 'cita' : null)
@@ -45,11 +55,24 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
         || citaContext?.telefonoCliente
         || '';
 
+    const pagos = item.pagos && typeof item.pagos === 'object'
+        ? item.pagos
+        : {
+            anticipo: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
+            segundoPago: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
+            liquidacion: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' }
+        };
+    const inversion = Number.isFinite(Number(item.inversion)) ? Number(item.inversion) : 0;
+    const { totalPagado } = calculatePagosSummary(pagos);
+    const saldoPendiente = Math.max(inversion - totalPagado, 0);
+
     return {
     id: String(item._id),
     _id: item._id,
     etapa: item.etapa,
     estado: item.estado,
+    etapaActual: String(item.etapaActual || ''),
+    timelineActual: String(item.etapaActual || ''),
     asignadoA: item.asignadoA || [],
     asignadoANombre: item.asignadoANombre || [],
     assignedToIds: item.asignadoA || [],
@@ -93,6 +116,11 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
         correo: clienteCorreo,
         telefono: clienteTelefono
     },
+    inversion,
+    inversionTotal: inversion,
+    pagos,
+    totalPagado,
+    saldoPendiente,
     archivos: Array.isArray(item.archivos)
         ? item.archivos.map((archivo) => ({
             id: archivo?.id || null,

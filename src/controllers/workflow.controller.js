@@ -30,8 +30,12 @@ export const promoverCita = async (req, res) => {
             ]
         });
 
-        const asignadoA = cita.ingenieroAsignado?._id ? [String(cita.ingenieroAsignado._id)] : [];
-        const asignadoANombre = cita.ingenieroAsignado?.nombre ? [cita.ingenieroAsignado.nombre] : [];
+        const asignadoA = Array.isArray(cita.ingenieroAsignado) 
+            ? cita.ingenieroAsignado.filter(id => id).map(id => String(id))
+            : (cita.ingenieroAsignado?._id ? [String(cita.ingenieroAsignado._id)] : []);
+        const asignadoANombre = Array.isArray(cita.ingenieroAsignado)
+            ? cita.ingenieroAsignado.map(ing => ing?.nombre || ing?.correo || '').filter(Boolean)
+            : (cita.ingenieroAsignado?.nombre ? [cita.ingenieroAsignado.nombre] : []);
 
         let tarea;
         if (existingTask) {

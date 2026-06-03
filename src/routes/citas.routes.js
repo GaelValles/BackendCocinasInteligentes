@@ -13,9 +13,13 @@ import {
     iniciarCita,
     finalizarCita,
     asignarIngenieroCita,
+    asignarMultiplesIngenieros,
+    actualizarDatosCita,
+    actualizarEstadoCita,
     obtenerCitasIngeniero,
     actualizarEspecificaciones,
-    obtenerDisponibilidad
+    obtenerDisponibilidad,
+    obtenerHorariosOcupados
 } from "../controllers/citas.controller.js";
 
 const router = Router();
@@ -28,6 +32,9 @@ router.post('/agregarCita', crearCita);
 // Ruta pública para consultar disponibilidad de horarios
 router.get('/disponibilidad', obtenerDisponibilidad);
 
+// Ruta pública para obtener horarios ocupados (simple y optimizado)
+router.get('/horarios-ocupados', obtenerHorariosOcupados);
+
 // ========== RUTAS AUTENTICADAS ==========
 
 // Ruta para actualizar cita existente
@@ -37,7 +44,7 @@ router.put('/actualizarCita/:id', authRequired, actualizarCita);
 router.delete('/eliminarCita/:id', authRequired, eliminarCita);
 
 // Ruta para ver citas del usuario autenticado (usado en "Ver citas" del diagrama)
-router.get('/verCitas', authRequired, obtenerCitas);
+router.get('/verCitas', obtenerCitas);
 
 // Ruta para ver una cita específica
 router.get('/verCita/:id', authRequired, obtenerCita);
@@ -48,7 +55,18 @@ router.get('/misCitas', authRequired, obtenerCitasIngeniero);
 // Asignar ingeniero a una cita (solo admin)
 router.put('/:id/asignarIngeniero', authRequired, asignarIngenieroCita);
 
-// Ruta para obtener citas por correo del cliente (query: ?correo=...)
+// ========== ENDPOINTS DE ADMINISTRACIÓN ==========
+
+// Asignar múltiples ingenieros a una cita (solo admin)
+router.put('/:id/asignarIngenieros', authRequired, asignarMultiplesIngenieros);
+
+// Actualizar datos del cliente en la cita (solo admin)
+router.put('/:id/actualizarDatos', authRequired, actualizarDatosCita);
+
+// Actualizar estado de la cita (solo admin)
+router.put('/:id/actualizarEstado', authRequired, actualizarEstadoCita);
+
+// ========== ENDPOINTS ADICIONALES ==========
 router.get('/porCliente', authRequired, obtenerCitasPorCliente);
 
 // Nota: la ruta por carro se removió temporalmente (no existe implementación)

@@ -16,12 +16,15 @@ const materialesSchema = new mongoose.Schema({
         type: String,
         required: true,
         enum: [
-            'm²',     // metro cuadrado
-            'm³',     // metro cúbico
-            'm',      // metro lineal
-            'unidad', // pieza individual
-            'caja',   // caja
-            'paquete' // paquete
+            'm2',
+            'm3',
+            'm',
+            'unidad',
+            'caja',
+            'paquete',
+            'placas',
+            'hoja',
+            'pies'
         ],
         default: 'unidad'
     },
@@ -44,23 +47,6 @@ const materialesSchema = new mongoose.Schema({
         min: 0,
         default: null
     },
-    categoria: {
-        type: String,
-        required: true,
-        enum: [
-            'Madera',
-            'Metal',
-            'Piedra',
-            'Granito',
-            'Mármol',
-            'Acero Inoxidable',
-            'Pintura',
-            'Herrajes',
-            'Iluminación',
-            'Adhesivos',
-            'Otro'
-        ]
-    },
     // Sección del formulario de materiales (cotización / presupuesto)
     seccion: {
         type: String,
@@ -70,13 +56,14 @@ const materialesSchema = new mongoose.Schema({
             'estructura',
             'vistas',
             'espesor',
+            'herrajes',
             'cajones_puertas',
             'accesorios_modulo',
             'extraibles_puertas_abatibles',
             'insumos_produccion',
-            'extras',
+            'otros',
             'gastos_fijos'
-        ],
+        ]
     },
     proveedor: {
         type: String,
@@ -120,7 +107,6 @@ const materialesSchema = new mongoose.Schema({
 });
 
 // Índices para búsquedas eficientes
-materialesSchema.index({ categoria: 1, disponible: 1 });
 materialesSchema.index({ seccion: 1, disponible: 1 });
 materialesSchema.index({ idCotizador: 1, disponible: 1 });
 materialesSchema.index({ proveedor: 1, disponible: 1 });

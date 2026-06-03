@@ -11,11 +11,13 @@ import {
     agregarArchivos,
     crearTarea,
     actualizarTarea,
+    asignarTrabajadoresTarea,
     eliminarTarea
 } from '../controllers/tareas.controller.js';
 import {
     crearTareaSchema,
     actualizarTareaSchema,
+    asignarTareaSchema,
     cambiarEtapaSchema,
     cambiarEstadoSchema,
     agregarArchivosSchema
@@ -42,9 +44,10 @@ router.post('/:id/archivos', upload.array('files'), (req, res, next) => {
 
 // Crear / actualizar / eliminar tareas (opciones para integración)
 router.post('/', validateSchema(crearTareaSchema), crearTarea);
-// Aceptar tanto PUT como PATCH para actualizaciones parciales desde el frontend
 router.put('/:id', validateSchema(actualizarTareaSchema), actualizarTarea);
 router.patch('/:id', validateSchema(actualizarTareaSchema), actualizarTarea);
+router.put('/:id/asignar-trabajadores', validateSchema(asignarTareaSchema), asignarTrabajadoresTarea);
+router.patch('/:id/asignar-trabajadores', validateSchema(asignarTareaSchema), asignarTrabajadoresTarea);
 router.delete('/:id', eliminarTarea);
 
 export default router;

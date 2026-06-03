@@ -1,90 +1,25 @@
 import Materiales from '../models/materiales.model.js';
 
-const ALLOWED_UNITS = ['m²', 'm³', 'm', 'unidad', 'caja', 'paquete'];
-const ALLOWED_CATEGORIES = ['Madera', 'Metal', 'Piedra', 'Granito', 'Mármol', 'Acero Inoxidable', 'Pintura', 'Herrajes', 'Iluminación', 'Adhesivos', 'Otro'];
+const ALLOWED_UNITS = ['m2', 'm3', 'm', 'unidad', 'caja', 'paquete', 'placas', 'hoja', 'pies'];
 const ALLOWED_SECTIONS = [
     'cubierta',
     'estructura',
     'vistas',
     'espesor',
+    'herrajes',
     'cajones_puertas',
     'accesorios_modulo',
     'extraibles_puertas_abatibles',
     'insumos_produccion',
-    'extras',
+    'otros',
     'gastos_fijos'
 ];
-
-// Mapeo de secciones del frontend (como llegan desde el cotizador) a secciones internas
-const FRONTEND_SECTION_MAPPING = {
-    'CUBIERTA': 'cubierta',
-    'ESTRUCTURA': 'estructura',
-    'VISTAS': 'vistas',
-    'ESPESOR': 'espesor',
-    'CAJONES Y PUERTAS': 'cajones_puertas',
-    'CAJONES_PUERTAS': 'cajones_puertas',
-    'ACCESORIOS DE MÓDULO': 'accesorios_modulo',
-    'ACCESORIOS_MODULO': 'accesorios_modulo',
-    'EXTRAÍBLES Y PUERTAS ABATIBLES': 'extraibles_puertas_abatibles',
-    'EXTRAIBLES_PUERTAS_ABATIBLES': 'extraibles_puertas_abatibles',
-    'INSUMOS DE PRODUCCIÓN': 'insumos_produccion',
-    'INSUMOS_PRODUCCION': 'insumos_produccion',
-    'EXTRAS': 'extras',
-    'GASTOS FIJOS': 'gastos_fijos',
-    'GASTOS_FIJOS': 'gastos_fijos',
-    'Herrajes': 'accesorios_modulo'
-};
 
 const isAdmin = (req) => req.admin?.rol === 'admin';
 
 const isHerrajeRoute = (req) => {
     const value = `${req.baseUrl || ''} ${req.originalUrl || ''}`.toLowerCase();
     return value.includes('herraje');
-};
-
-const normalizeCategoriaToSectionIfNeeded = (categoriaInput) => {
-    if (!categoriaInput) return { categoria: undefined, seccion: undefined };
-
-    const normalized = String(categoriaInput).trim();
-    const upperKey = normalized.toUpperCase();
-
-    // Detectar si es una sección del cotizador o sección normalizada
-    if (FRONTEND_SECTION_MAPPING[normalized] !== undefined) {
-        return {
-            categoria: 'Otro',
-            seccion: FRONTEND_SECTION_MAPPING[normalized]
-        };
-    }
-
-    if (FRONTEND_SECTION_MAPPING[upperKey] !== undefined) {
-        return {
-            categoria: 'Otro',
-            seccion: FRONTEND_SECTION_MAPPING[upperKey]
-        };
-    }
-
-    // Si ya es una sección conocida
-    const normalizedSection = normalizeSection(normalized);
-    if (ALLOWED_SECTIONS.includes(normalizedSection)) {
-        return {
-            categoria: 'Otro',
-            seccion: normalizedSection
-        };
-    }
-
-    // Si es una categoría válida, devolverla como está
-    if (ALLOWED_CATEGORIES.includes(normalized)) {
-        return {
-            categoria: normalized,
-            seccion: undefined
-        };
-    }
-
-    // Fallback: devolver como llega (será rechazado en validación si no es válido)
-    return {
-        categoria: normalized,
-        seccion: undefined
-    };
 };
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
@@ -143,7 +78,6 @@ const mapMaterialResponse = (material) => {
         precioUnitario: material.precioUnitario ?? null,
         precioPorMetro: material.precioPorMetro ?? null,
         precioMetroLineal: material.precioPorMetro ?? null,
-        categoria: material.categoria,
         seccion: material.seccion || null,
         proveedor: material.proveedor || '',
         image: material.image || '',
@@ -169,22 +103,11 @@ const buildValidationResult = (payload = {}, { create = false, herraje = false }
 
     const rawSection = hasOwn(payload, 'seccion') ? normalizeSection(payload.seccion) : undefined;
     const rawUnidad = hasOwn(payload, 'unidadMedida') ? normalizeString(payload.unidadMedida) : undefined;
-    const rawCategoria = hasOwn(payload, 'categoria') ? normalizeString(payload.categoria) : undefined;
-
-    // Detectar si lo que llega como categoría es realmente una sección del cotizador
-    const mappedResult = normalizeCategoriaToSectionIfNeeded(rawCategoria);
     let unidadMedida = rawUnidad ?? (create && herraje ? 'unidad' : undefined);
-    let categoria = mappedResult.categoria;
-    let seccion = rawSection ?? mappedResult.seccion;
+    let seccion = rawSection;
 
-    // Si se envió seccion explícitamente, usa ese valor (tiene prioridad)
-    if (rawSection !== undefined) {
-        seccion = rawSection;
-    }
-
-    // Si no se determinó categoría y estamos en create/herraje, asigna default
-    if (!categoria && create && herraje) {
-        categoria = 'Herrajes';
+    if (!seccion && create && herraje) {
+        seccion = 'herrajes';
     }
 
     const precioUnitario = hasOwn(payload, 'precioUnitario') ? toNumberOrNull(payload.precioUnitario) : undefined;
@@ -203,14 +126,6 @@ const buildValidationResult = (payload = {}, { create = false, herraje = false }
 
     if (unidadMedida !== undefined && !ALLOWED_UNITS.includes(unidadMedida)) {
         errors.push({ field: 'unidadMedida', message: `Unidad inválida. Valores permitidos: ${ALLOWED_UNITS.join(', ')}` });
-    }
-
-    if (create && !categoria) {
-        errors.push({ field: 'categoria', message: `Categoria requerida. Valores permitidos: ${ALLOWED_CATEGORIES.join(', ')}` });
-    }
-
-    if (categoria !== undefined && !ALLOWED_CATEGORIES.includes(categoria)) {
-        errors.push({ field: 'categoria', message: `Categoria inválida. Valores permitidos: ${ALLOWED_CATEGORIES.join(', ')}` });
     }
 
     if (rawSection !== undefined && rawSection !== '' && !ALLOWED_SECTIONS.includes(rawSection)) {
@@ -244,7 +159,6 @@ const buildValidationResult = (payload = {}, { create = false, herraje = false }
             unidadMedida,
             precioUnitario,
             precioPorMetro,
-            categoria,
             seccion,
             proveedor,
             image,
@@ -296,7 +210,6 @@ export const crearMaterial = async (req, res) => {
             unidadMedida: data.unidadMedida,
             precioUnitario: data.precioUnitario ?? null,
             precioPorMetro: data.precioPorMetro ?? null,
-            categoria: data.categoria,
             seccion: data.seccion || undefined,
             proveedor: data.proveedor || '',
             image: data.image || '',
@@ -323,10 +236,9 @@ export const crearMaterial = async (req, res) => {
 // Obtener todos los materiales
 export const obtenerMateriales = async (req, res) => {
     try {
-        const { categoria, disponible, seccion, secciones, proveedor, q } = req.query;
+        const { disponible, seccion, secciones, proveedor, q } = req.query;
 
         const filtro = {};
-        if (categoria) filtro.categoria = new RegExp(`^${escapeRegex(String(categoria).trim())}$`, 'i');
 
         const sectionCandidates = [];
         if (seccion) sectionCandidates.push(seccion);
@@ -349,13 +261,12 @@ export const obtenerMateriales = async (req, res) => {
                 { nombre: qRegex },
                 { descripcion: qRegex },
                 { idCotizador: qRegex },
-                { categoria: qRegex },
                 { proveedor: qRegex }
             ];
         }
 
         const materiales = await Materiales.find(filtro)
-            .select('idCotizador nombre descripcion unidadMedida precioUnitario precioPorMetro categoria seccion proveedor image gama tier disponible createdAt updatedAt')
+            .select('idCotizador nombre descripcion unidadMedida precioUnitario precioPorMetro seccion proveedor image gama tier disponible createdAt updatedAt')
             .sort({ nombre: 1 })
             .lean();
 
@@ -418,6 +329,8 @@ export const actualizarMaterial = async (req, res) => {
     try {
         const { id } = req.params;
         const actualizaciones = req.body || {};
+        const tienePrecioAlias = hasOwn(actualizaciones, 'precio');
+        const precioAlias = tienePrecioAlias ? toNumberOrNull(actualizaciones.precio) : undefined;
 
         if (!isAdmin(req)) {
             return res.status(403).json({ success: false, message: 'Solo admin puede actualizar materiales' });
@@ -437,10 +350,17 @@ export const actualizarMaterial = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Payload inválido', errors });
         }
 
+        if (tienePrecioAlias && (precioAlias === null || Number.isNaN(precioAlias) || precioAlias < 0)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Payload inválido',
+                errors: [{ field: 'precio', message: 'precio debe ser numérico y mayor o igual a 0' }]
+            });
+        }
+
         if (data.nombre !== undefined) material.nombre = data.nombre;
         if (data.descripcion !== undefined) material.descripcion = data.descripcion || '';
         if (data.unidadMedida !== undefined) material.unidadMedida = data.unidadMedida;
-        if (data.categoria !== undefined) material.categoria = data.categoria;
         if (data.seccion !== undefined) material.seccion = data.seccion || undefined;
         if (data.proveedor !== undefined) material.proveedor = data.proveedor || '';
         if (data.image !== undefined) material.image = data.image || '';
@@ -448,6 +368,21 @@ export const actualizarMaterial = async (req, res) => {
         if (data.tier !== undefined) material.tier = data.tier;
         if (data.idCotizador !== undefined) material.idCotizador = data.idCotizador || undefined;
         if (data.disponible !== undefined) material.disponible = data.disponible;
+
+        if (tienePrecioAlias && precioAlias !== undefined) {
+            if (material.precioPorMetro !== null) {
+                material.precioPorMetro = precioAlias;
+            } else {
+                if (material.precioUnitario !== null) {
+                    material.historialPrecios.push({
+                        precio: material.precioUnitario,
+                        fecha: new Date(),
+                        modificadoPor: req.admin.id
+                    });
+                }
+                material.precioUnitario = precioAlias;
+            }
+        }
 
         if (data.precioUnitario !== undefined) {
             if (material.precioUnitario !== null) {

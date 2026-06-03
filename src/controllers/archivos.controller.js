@@ -4,6 +4,8 @@ import { uploadFileToDropbox, deleteFileFromDropbox } from '../libs/dropbox.js';
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from '../libs/cloudinary.js';
 import ClienteArchivo from '../models/clienteArchivo.model.js';
 import ClienteIdentidad from '../models/clienteIdentidad.model.js';
+import Tarea from '../models/tarea.model.js';
+import Proyecto from '../models/proyecto.model.js';
 import path from 'path';
 
 const DEBUG = String(process.env.DEBUG_ARCHIVOS || 'false').toLowerCase() === 'true';
@@ -74,6 +76,94 @@ const getProviderForType = (tipo) => {
   return PROVIDER_BY_TYPE[tipo] || 'cloudinary';
 };
 
+const RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
+
+const toStoredFileRecord = ({ tipo, file, uploadResult, clienteCodigo, relacionadoA, relacionadoId, tareasId }) => {
+  const linkedTaskId = tareasId || (String(relacionadoA || '').toLowerCase() === 'tarea' ? relacionadoId : null);
+  return {
+    id: String(Date.now()) + Math.random().toString(36).slice(2, 8),
+    nombre: file.originalname,
+    tipo,
+    url: uploadResult.url,
+    key: uploadResult.key,
+    provider: uploadResult.provider || 'cloudinary',
+    mimeType: file.mimetype,
+    clienteId: clienteCodigo,
+    relacionadoA,
+    relacionadoId,
+    tareasId: linkedTaskId,
+    createdAt: new Date()
+  };
+};
+
+const upsertFileBySlotOrKey = (current = [], incoming = {}) => {
+  const next = Array.isArray(current) ? [...current] : [];
+  const key = String(incoming.key || '').trim();
+  const url = String(incoming.url || '').trim();
+  const tipo = String(incoming.tipo || '').trim();
+
+  const existingIndex = next.findIndex((item) => {
+    if (key && item?.key === key) return true;
+    if (url && item?.url === url) return true;
+    if (RECEIPT_TYPES.has(tipo) && item?.tipo === tipo) return true;
+    return false;
+  });
+
+  if (existingIndex === -1) {
+    next.push(incoming);
+  } else {
+    next[existingIndex] = {
+      ...(next[existingIndex] || {}),
+      ...incoming
+    };
+  }
+
+  return next;
+};
+
+const appendArchivoToRelatedEntities = async (stored) => {
+  const relacionadoA = String(stored.relacionadoA || '').toLowerCase();
+  const relacionadoId = String(stored.relacionadoId || '').trim();
+  const taskId = String(stored.tareasId || '').trim();
+  const fileRecord = {
+    id: stored.id,
+    nombre: stored.nombre,
+    tipo: stored.tipo,
+    url: stored.url,
+    key: stored.key,
+    provider: stored.provider,
+    mimeType: stored.mimeType,
+    clienteId: stored.clienteId,
+    createdAt: stored.createdAt
+  };
+
+  const resolvedTaskId = taskId || (relacionadoA === 'tarea' ? relacionadoId : '');
+  if (resolvedTaskId && mongoose.Types.ObjectId.isValid(resolvedTaskId)) {
+    const tarea = await Tarea.findById(resolvedTaskId);
+    if (tarea) {
+      tarea.archivos = upsertFileBySlotOrKey(tarea.archivos, fileRecord);
+      await tarea.save();
+
+      const proyectoId = String(tarea.proyectoId || '').trim();
+      if (proyectoId && mongoose.Types.ObjectId.isValid(proyectoId)) {
+        const proyecto = await Proyecto.findById(proyectoId);
+        if (proyecto) {
+          proyecto.archivos = upsertFileBySlotOrKey(proyecto.archivos, fileRecord);
+          await proyecto.save();
+        }
+      }
+    }
+  }
+
+  if (relacionadoA === 'proyecto' && relacionadoId && mongoose.Types.ObjectId.isValid(relacionadoId)) {
+    const proyecto = await Proyecto.findById(relacionadoId);
+    if (proyecto) {
+      proyecto.archivos = upsertFileBySlotOrKey(proyecto.archivos, fileRecord);
+      await proyecto.save();
+    }
+  }
+};
+
 const ALLOWED_NIVELES = new Set(['preliminar', 'final']);
 
 const normalizeNivel = (nivelRaw = '', tipo = '') => {
@@ -122,6 +212,13 @@ export const subirArchivo = async (req, res) => {
     const { tipo, clienteId, tareasId, nivel, relacionadoA, relacionadoId } = req.body;
     const tipoNormalizado = normalizeType(tipo);
     const nivelNormalizado = normalizeNivel(nivel, tipoNormalizado);
+
+    if (RECEIPT_TYPES.has(tipoNormalizado) && !String(file.mimetype || '').toLowerCase().startsWith('image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Para recibos solo se permiten imagenes (jpeg, png, webp, etc.)'
+      });
+    }
 
     const tareasIdNormalizado = (() => {
       if (tareasId) return String(tareasId);
@@ -189,6 +286,17 @@ export const subirArchivo = async (req, res) => {
       });
     }
 
+    const stored = toStoredFileRecord({
+      tipo: tipoNormalizado,
+      file,
+      uploadResult,
+      clienteCodigo: cliente.codigo,
+      relacionadoA,
+      relacionadoId,
+      tareasId: tareasIdNormalizado
+    });
+    await appendArchivoToRelatedEntities(stored);
+
     res.status(201).json({
       success: true,
       message: 'Archivo subido exitosamente',
@@ -233,6 +341,16 @@ export const subirMultiples = async (req, res) => {
     const { tipo, clienteId, tareasId, nivel, relacionadoA, relacionadoId } = req.body;
     const tipoNormalizado = normalizeType(tipo);
     const nivelNormalizado = normalizeNivel(nivel, tipoNormalizado);
+
+    if (RECEIPT_TYPES.has(tipoNormalizado)) {
+      const invalidReceipt = files.find((item) => !String(item.mimetype || '').toLowerCase().startsWith('image/'));
+      if (invalidReceipt) {
+        return res.status(400).json({
+          success: false,
+          message: 'Para recibos solo se permiten imagenes (jpeg, png, webp, etc.)'
+        });
+      }
+    }
 
     const tareasIdNormalizado = (() => {
       if (tareasId) return String(tareasId);
@@ -303,6 +421,17 @@ export const subirMultiples = async (req, res) => {
           createdAt: clienteArchivo.createdAt,
           updatedAt: clienteArchivo.updatedAt
         });
+
+        const stored = toStoredFileRecord({
+          tipo: tipoNormalizado,
+          file,
+          uploadResult,
+          clienteCodigo: cliente.codigo,
+          relacionadoA,
+          relacionadoId,
+          tareasId: tareasIdNormalizado
+        });
+        await appendArchivoToRelatedEntities(stored);
 
       } catch (error) {
         errores.push({

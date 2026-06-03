@@ -59,6 +59,7 @@ const mapProyecto = (proyecto) => ({
     tipo: proyecto.tipo,
     estado: proyecto.estado,
     timelineActual: proyecto.timelineActual,
+    etapaActual: proyecto.timelineActual,
     presupuestoTotal: proyecto.presupuestoTotal || 0,
     anticipo: proyecto.anticipo || 0,
     segundoPago: proyecto.segundoPago || 0,
@@ -73,6 +74,7 @@ const mapTarea = (tarea) => ({
     _id: tarea._id,
     etapa: tarea.etapa,
     estado: tarea.estado,
+    etapaActual: tarea.etapaActual || '',
     proyectoId: tarea.proyectoId || null,
     nombreProyecto: tarea.nombreProyecto || '',
     prioridad: tarea.prioridad || 'media',
@@ -102,8 +104,12 @@ const mapCita = (cita) => ({
     estado: cita.estado,
     ubicacion: cita.ubicacion || '',
     informacionAdicional: cita.informacionAdicional || '',
-    ingenieroAsignado: cita.ingenieroAsignado?._id || cita.ingenieroAsignado || null,
-    nombreIngenieroAsignado: cita.ingenieroAsignado?.nombre || '',
+    ingenieroAsignado: Array.isArray(cita.ingenieroAsignado) 
+        ? cita.ingenieroAsignado.map(ing => ing?._id || ing)
+        : (cita.ingenieroAsignado?._id || cita.ingenieroAsignado || null),
+    nombreIngenieroAsignado: Array.isArray(cita.ingenieroAsignado)
+        ? cita.ingenieroAsignado.map(ing => ing?.nombre || '').join(', ')
+        : (cita.ingenieroAsignado?.nombre || ''),
     createdAt: cita.createdAt,
     updatedAt: cita.updatedAt
 });

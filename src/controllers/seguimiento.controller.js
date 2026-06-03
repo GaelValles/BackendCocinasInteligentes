@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import Proyecto from '../models/proyecto.model.js';
 import Tarea from '../models/tarea.model.js';
 import TrackingAccess from '../models/trackingAccess.model.js';
+import ClienteArchivo from '../models/clienteArchivo.model.js';
+import ClienteIdentidad from '../models/clienteIdentidad.model.js';
 import {
     normalizeCodigoInput,
     findEnabledAccessByCodigo6,
@@ -104,27 +106,129 @@ const mapArchivos = (archivos = []) => {
     });
 };
 
-const buildPagosDto = (proyecto) => {
+const TRACKING_RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
+
+const normalizeTrackingFile = (archivo = {}) => {
+    const tipo = String(archivo?.tipo || '').trim() || 'archivo';
     return {
-        anticipo: {
-            amount: Number(proyecto?.anticipo || 0),
-            date: '',
-            receiptLabel: 'Ver recibo',
-            receiptImage: ''
-        },
-        segundoPago: {
-            amount: Number(proyecto?.segundoPago || 0),
-            date: '',
-            receiptLabel: 'Ver recibo',
-            receiptImage: ''
-        },
-        liquidacion: {
-            amount: Number(proyecto?.liquidacion || 0),
-            date: '',
-            receiptLabel: 'Ver recibo',
-            receiptImage: ''
-        }
+        id: archivo?._id ? String(archivo._id) : String(archivo?.id || `${archivo?.nombre || 'archivo'}-${archivo?.createdAt || Date.now()}`),
+        nombre: String(archivo?.nombre || ''),
+        tipo,
+        url: String(archivo?.url || '')
     };
+};
+
+const mergeTrackingFiles = (...fileGroups) => {
+    const merged = [];
+    const seen = new Set();
+
+    for (const group of fileGroups) {
+        for (const raw of (Array.isArray(group) ? group : [])) {
+            const item = normalizeTrackingFile(raw);
+            if (!item.url) continue;
+
+            const dedupKey = `${item.tipo}::${item.url}`;
+            if (seen.has(dedupKey)) continue;
+            seen.add(dedupKey);
+            merged.push(item);
+        }
+    }
+
+    return merged;
+};
+
+const buildTaskReceiptIndex = (archivos = []) => {
+    const index = {};
+    for (const raw of (Array.isArray(archivos) ? archivos : [])) {
+        const item = normalizeTrackingFile(raw);
+        if (!TRACKING_RECEIPT_TYPES.has(item.tipo) || !item.url) continue;
+        if (!index[item.tipo]) index[item.tipo] = item;
+    }
+    return index;
+};
+
+const buildClientReceiptIndex = (archivos = []) => {
+    const index = {};
+    for (const raw of (Array.isArray(archivos) ? archivos : [])) {
+        const tipo = String(raw?.tipo || '').trim();
+        const url = String(raw?.url || '').trim();
+        if (!TRACKING_RECEIPT_TYPES.has(tipo) || !url) continue;
+        if (!index[tipo]) {
+            index[tipo] = {
+                id: raw?._id ? String(raw._id) : `${tipo}-${raw?.createdAt || Date.now()}`,
+                nombre: String(raw?.nombre || ''),
+                tipo,
+                url
+            };
+        }
+    }
+    return index;
+};
+
+const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
+    const defaultDto = {
+        amount: 0,
+        date: '',
+        receiptLabel: 'Ver recibo',
+        receiptImage: ''
+    };
+
+    const slots = [
+        ['anticipo', 'recibo_1'],
+        ['segundoPago', 'recibo_2'],
+        ['liquidacion', 'recibo_3']
+    ];
+
+    const out = {};
+
+    for (const [slot, receiptType] of slots) {
+        const taskSlot = tarea?.pagos?.[slot] || {};
+        const projectSlot = proyecto?.pagos?.[slot] || {};
+        const fallbackReceipt = receiptIndex[receiptType]?.url || '';
+
+        const fallbackAmount = Number(slot === 'anticipo'
+            ? proyecto?.anticipo
+            : slot === 'segundoPago'
+                ? proyecto?.segundoPago
+                : proyecto?.liquidacion);
+
+        out[slot] = {
+            amount: Number.isFinite(Number(taskSlot?.amount))
+                ? Number(taskSlot.amount)
+                : (Number.isFinite(Number(projectSlot?.amount))
+                    ? Number(projectSlot.amount)
+                    : (Number.isFinite(fallbackAmount) ? fallbackAmount : defaultDto.amount)),
+            date: String(taskSlot?.date || projectSlot?.date || defaultDto.date),
+            receiptLabel: String(taskSlot?.receiptLabel || projectSlot?.receiptLabel || defaultDto.receiptLabel),
+            receiptImage: String(taskSlot?.receiptImage || projectSlot?.receiptImage || fallbackReceipt || defaultDto.receiptImage)
+        };
+    }
+
+    return out;
+};
+
+const resolveInversionForTracking = ({ proyecto, tarea } = {}) => {
+    const inversionTarea = Number(tarea?.inversion);
+    if (Number.isFinite(inversionTarea) && inversionTarea > 0) {
+        return inversionTarea;
+    }
+
+    const inversionProyecto = Number(proyecto?.presupuestoTotal);
+    if (Number.isFinite(inversionProyecto) && inversionProyecto > 0) {
+        return inversionProyecto;
+    }
+
+    return Number.isFinite(inversionTarea) ? inversionTarea : 0;
+};
+
+const calculatePagosSummary = (pagos = {}) => {
+    const slots = ['anticipo', 'segundoPago', 'liquidacion'];
+    const totalPagado = slots.reduce((acc, slot) => {
+        const amount = Number(pagos?.[slot]?.amount ?? 0);
+        return acc + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
+
+    return { totalPagado };
 };
 
 const resolveProjectByCodigo6 = async (codigo6) => {
@@ -247,20 +351,42 @@ const buildProjectSnapshot = async (access) => {
         const tarea = await resolveTaskForAccess(access);
         if (!tarea) return null;
 
+        // Usar clienteId de la tarea (ya contiene código de clienteIdentidad)
+        const codigoClienteIdentidad = String(tarea?.clienteId || access?.codigo6 || '').trim().toUpperCase();
+        const clientReceipts = codigoClienteIdentidad
+            ? await ClienteArchivo.find({ clienteId: codigoClienteIdentidad, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+                .sort({ createdAt: -1 })
+                .lean()
+            : [];
+        const receiptIndex = {
+            ...buildTaskReceiptIndex(tarea?.archivos),
+            ...buildClientReceiptIndex(clientReceipts)
+        };
+
         const clienteNombre = tarea.cliente?.nombre || tarea.cita?.nombreCliente || 'Cliente';
+        const pagos = buildPagosDto({ tarea, receiptIndex });
+        const inversion = resolveInversionForTracking({ tarea });
+        const { totalPagado } = calculatePagosSummary(pagos);
+        const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
         return {
-            codigo: access.codigo6,
+            codigo: codigoClienteIdentidad,
             cliente: clienteNombre,
             isProspect: true,
-            inversion: 0,
+            inversion,
+            inversionTotal: inversion,
             fechaInicio: formatDateSimple(tarea.createdAt),
             fechaEntrega: formatDateSimple(tarea.updatedAt),
             garantiaInicio: formatDateISO(tarea.updatedAt),
             estadoProyecto: tarea.estado || 'pendiente',
-            etapaActual: tarea.etapa || 'citas',
-            pagos: buildPagosDto(null),
-            archivos: [],
+            etapaActual: tarea.etapaActual || tarea.etapa || 'Diseño Aprobado',
+            timelineActual: tarea.etapaActual || tarea.etapa || 'Diseño Aprobado',
+            followUpStatus: tarea.followUpStatus || 'pendiente',
+            pagos,
+            totalPagado,
+            saldoPendiente,
+            seguimientoNota: String(tarea.seguimientoNota || ''),
+            archivos: mergeTrackingFiles(tarea.archivos, clientReceipts),
             cotizacionPreliminarImage: '',
             cotizacionFormalImage: '',
             projectId: tarea.proyectoId || null,
@@ -272,21 +398,45 @@ const buildProjectSnapshot = async (access) => {
         .sort({ updatedAt: -1 })
         .lean();
 
-    const archivos = mapArchivos(proyecto.archivosPublicos || []);
+    // Usar clienteId del proyecto (ya contiene código de clienteIdentidad)
+    const codigoClienteIdentidad = String(proyecto?.clienteId || access?.codigo6 || ultimaTarea?.clienteId || '').trim().toUpperCase();
+    const clientReceipts = codigoClienteIdentidad
+        ? await ClienteArchivo.find({ clienteId: codigoClienteIdentidad, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+            .sort({ createdAt: -1 })
+            .lean()
+        : [];
+
+    const receiptIndex = {
+        ...buildTaskReceiptIndex(proyecto.archivos),
+        ...buildTaskReceiptIndex(ultimaTarea?.archivos),
+        ...buildClientReceiptIndex(clientReceipts)
+    };
+
+    const archivos = mergeTrackingFiles(proyecto.archivosPublicos, proyecto.archivos, ultimaTarea?.archivos, clientReceipts);
     const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
     const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
+    const pagos = buildPagosDto({ proyecto, tarea: ultimaTarea, receiptIndex });
+    const inversion = resolveInversionForTracking({ proyecto, tarea: ultimaTarea });
+    const { totalPagado } = calculatePagosSummary(pagos);
+    const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
     return {
-        codigo: access.codigo6,
+        codigo: codigoClienteIdentidad,
         cliente: proyecto.nombreCliente || proyecto.cliente?.nombre || 'Cliente',
         isProspect: false,
-        inversion: Number(proyecto.presupuestoTotal || 0),
+        inversion,
+        inversionTotal: inversion,
         fechaInicio: formatDateSimple(proyecto.createdAt),
         fechaEntrega: formatDateSimple(proyecto.updatedAt),
         garantiaInicio: formatDateISO(proyecto.updatedAt),
         estadoProyecto: proyecto.estado || 'cotizacion',
-        etapaActual: proyecto.timelineActual || ultimaTarea?.etapa || 'cotizacion',
-        pagos: buildPagosDto(proyecto),
+            etapaActual: ultimaTarea?.etapaActual || proyecto.timelineActual || ultimaTarea?.etapa || 'Diseño Aprobado',
+            timelineActual: ultimaTarea?.etapaActual || proyecto.timelineActual || ultimaTarea?.etapa || 'Diseño Aprobado',
+        followUpStatus: ultimaTarea?.followUpStatus || 'pendiente',
+        pagos,
+        totalPagado,
+        saldoPendiente,
+        seguimientoNota: String(ultimaTarea?.seguimientoNota || proyecto?.seguimientoNota || ''),
         archivos,
         cotizacionPreliminarImage,
         cotizacionFormalImage,
@@ -413,10 +563,36 @@ export const getArchivosSeguimiento = async (req, res) => {
         const proyecto = await resolveProjectForAccess(access);
 
         if (!proyecto) {
-            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+            const tarea = await resolveTaskForAccess(access);
+            if (!tarea) {
+                return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+            }
+
+            const clienteCodigo = String(tarea?.clienteId || access?.codigo6 || '').trim().toUpperCase();
+            const clientReceipts = clienteCodigo
+                ? await ClienteArchivo.find({ clienteId: clienteCodigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+                    .sort({ createdAt: -1 })
+                    .lean()
+                : [];
+
+            return res.status(200).json({ success: true, data: mergeTrackingFiles(tarea.archivos, clientReceipts) });
         }
 
-        return res.status(200).json({ success: true, data: mapArchivos(proyecto.archivosPublicos || []) });
+        const ultimaTarea = await Tarea.findOne({ proyectoId: String(proyecto._id) })
+            .sort({ updatedAt: -1 })
+            .lean();
+
+        const clienteCodigo = String(proyecto?.clienteId || access?.codigo6 || ultimaTarea?.clienteId || '').trim().toUpperCase();
+        const clientReceipts = clienteCodigo
+            ? await ClienteArchivo.find({ clienteId: clienteCodigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+                .sort({ createdAt: -1 })
+                .lean()
+            : [];
+
+        return res.status(200).json({
+            success: true,
+            data: mergeTrackingFiles(proyecto.archivosPublicos, proyecto.archivos, ultimaTarea?.archivos, clientReceipts)
+        });
     } catch (error) {
         console.error('Error al obtener archivos de seguimiento:', error);
         return res.status(500).json({ success: false, message: 'Error al obtener archivos', error: error.message });
@@ -429,10 +605,42 @@ export const getPagosSeguimiento = async (req, res) => {
         const proyecto = await resolveProjectForAccess(access);
 
         if (!proyecto) {
-            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+            const tarea = await resolveTaskForAccess(access);
+            if (!tarea) {
+                return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+            }
+
+            const clienteCodigo = String(tarea?.clienteId || access?.codigo6 || '').trim().toUpperCase();
+            const clientReceipts = clienteCodigo
+                ? await ClienteArchivo.find({ clienteId: clienteCodigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+                    .sort({ createdAt: -1 })
+                    .lean()
+                : [];
+            const receiptIndex = {
+                ...buildTaskReceiptIndex(tarea?.archivos),
+                ...buildClientReceiptIndex(clientReceipts)
+            };
+
+            return res.status(200).json({ success: true, data: buildPagosDto({ tarea, receiptIndex }) });
         }
 
-        return res.status(200).json({ success: true, data: buildPagosDto(proyecto) });
+        const ultimaTarea = await Tarea.findOne({ proyectoId: String(proyecto._id) })
+            .sort({ updatedAt: -1 })
+            .lean();
+
+        const clienteCodigo = String(proyecto?.clienteId || access?.codigo6 || ultimaTarea?.clienteId || '').trim().toUpperCase();
+        const clientReceipts = clienteCodigo
+            ? await ClienteArchivo.find({ clienteId: clienteCodigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+                .sort({ createdAt: -1 })
+                .lean()
+            : [];
+        const receiptIndex = {
+            ...buildTaskReceiptIndex(proyecto.archivos),
+            ...buildTaskReceiptIndex(ultimaTarea?.archivos),
+            ...buildClientReceiptIndex(clientReceipts)
+        };
+
+        return res.status(200).json({ success: true, data: buildPagosDto({ proyecto, tarea: ultimaTarea, receiptIndex }) });
     } catch (error) {
         console.error('Error al obtener pagos de seguimiento:', error);
         return res.status(500).json({ success: false, message: 'Error al obtener pagos', error: error.message });

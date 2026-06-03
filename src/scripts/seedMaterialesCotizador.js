@@ -7,17 +7,17 @@ import '../db.js';
 import Materiales from '../models/materiales.model.js';
 
 const BASE_MATERIALS = [
-    { idCotizador: 'melamina', nombre: 'Melamina', precioPorMetro: 6500, unidadMedida: 'm', categoria: 'Madera' },
-    { idCotizador: 'mdf', nombre: 'MDF', precioPorMetro: 7800, unidadMedida: 'm', categoria: 'Madera' },
-    { idCotizador: 'tech', nombre: 'Tech', precioPorMetro: 9800, unidadMedida: 'm', categoria: 'Madera' }
+    { idCotizador: 'melamina', nombre: 'Melamina', precioPorMetro: 6500, unidadMedida: 'm' },
+    { idCotizador: 'mdf', nombre: 'MDF', precioPorMetro: 7800, unidadMedida: 'm' },
+    { idCotizador: 'tech', nombre: 'Tech', precioPorMetro: 9800, unidadMedida: 'm' }
 ];
 
 const HERRADURAS = [
-    { idCotizador: 'correderas', nombre: 'Correderas cierre suave', precioUnitario: 500, unidadMedida: 'unidad', categoria: 'Herrajes' },
-    { idCotizador: 'bisagras', nombre: 'Bisagras 110° reforzadas', precioUnitario: 140, unidadMedida: 'unidad', categoria: 'Herrajes' },
-    { idCotizador: 'jaladeras', nombre: 'Jaladeras minimalistas', precioUnitario: 90, unidadMedida: 'unidad', categoria: 'Herrajes' },
-    { idCotizador: 'bote', nombre: 'Bote de basura extraíble', precioUnitario: 1200, unidadMedida: 'unidad', categoria: 'Herrajes' },
-    { idCotizador: 'iluminacion', nombre: 'Iluminación LED interior', precioUnitario: 780, unidadMedida: 'unidad', categoria: 'Iluminación' }
+    { idCotizador: 'correderas', nombre: 'Correderas cierre suave', precioUnitario: 500, unidadMedida: 'unidad', seccion: 'herrajes' },
+    { idCotizador: 'bisagras', nombre: 'Bisagras 110° reforzadas', precioUnitario: 140, unidadMedida: 'unidad', seccion: 'herrajes' },
+    { idCotizador: 'jaladeras', nombre: 'Jaladeras minimalistas', precioUnitario: 90, unidadMedida: 'unidad', seccion: 'herrajes' },
+    { idCotizador: 'bote', nombre: 'Bote de basura extraíble', precioUnitario: 1200, unidadMedida: 'unidad', seccion: 'herrajes' },
+    { idCotizador: 'iluminacion', nombre: 'Iluminación LED interior', precioUnitario: 780, unidadMedida: 'unidad', seccion: 'herrajes' }
 ];
 
 async function seed() {
@@ -29,7 +29,7 @@ async function seed() {
                     nombre: m.nombre,
                     precioPorMetro: m.precioPorMetro,
                     unidadMedida: m.unidadMedida,
-                    categoria: m.categoria,
+                    seccion: m.seccion,
                     idCotizador: m.idCotizador,
                     descripcion: `Material base para cotizador - ${m.nombre}`,
                     disponible: true
@@ -45,7 +45,7 @@ async function seed() {
                     nombre: h.nombre,
                     precioUnitario: h.precioUnitario,
                     unidadMedida: h.unidadMedida,
-                    categoria: h.categoria,
+                    seccion: h.seccion,
                     idCotizador: h.idCotizador,
                     descripcion: `Herraje para cotizador - ${h.nombre}`,
                     disponible: true

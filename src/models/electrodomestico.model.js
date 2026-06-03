@@ -12,6 +12,11 @@ const electrodomesticoSchema = new mongoose.Schema({
         required: true,
         trim: true
     },
+    categoriaId: {
+        type: String,
+        default: null,
+        index: true
+    },
     subtipo: {
         type: String,
         trim: true,

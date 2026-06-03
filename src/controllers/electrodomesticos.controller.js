@@ -1,4 +1,5 @@
 import Electrodomestico from '../models/electrodomestico.model.js';
+import ElectrodomesticoCategoria from '../models/electrodomesticoCategoria.model.js';
 import { uploadFileToCloudinary } from '../libs/cloudinary.js';
 
 const normalizeText = (text) => {
@@ -9,42 +10,123 @@ const escapeRegex = (text) => {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
 
+const buildCategoryLookup = async () => {
+    const categorias = await ElectrodomesticoCategoria.find({ disponible: true })
+        .select('_id nombre')
+        .lean();
+
+    const byId = new Map();
+    const byName = new Map();
+
+    for (const categoria of categorias) {
+        const nombreNormalizado = normalizeText(categoria.nombre);
+        byId.set(String(categoria._id), categoria);
+        byName.set(nombreNormalizado, categoria);
+    }
+
+    return { byId, byName };
+};
+
+const resolveCategoriaFilter = async (categoriaId) => {
+    const normalizedValue = normalizeText(categoriaId);
+    if (!normalizedValue) return null;
+
+    const lookup = await buildCategoryLookup();
+    const byIdMatch = lookup.byId.get(String(categoriaId));
+    if (byIdMatch) {
+        return {
+            categoriaId: String(byIdMatch._id),
+            categoriaNombre: byIdMatch.nombre
+        };
+    }
+
+    const byNameMatch = lookup.byName.get(normalizedValue);
+    if (byNameMatch) {
+        return {
+            categoriaId: String(byNameMatch._id),
+            categoriaNombre: byNameMatch.nombre
+        };
+    }
+
+    return {
+        categoriaId: normalizedValue,
+        categoriaNombre: categoriaId
+    };
+};
+
 const isAdmin = (req) => req.admin?.rol === 'admin';
 const isEmpleado = (req) => req.admin?.rol === 'empleado';
 const isAuthorized = (req) => isAdmin(req) || isEmpleado(req);
 
 export const listarElectrodomesticos = async (req, res) => {
     try {
-        const { q, categoria, disponible } = req.query;
-        const filter = { disponible: true };
+        const { q, categoria, categoriaId, disponible } = req.query;
+        const filter = {};
+        const andConditions = [];
 
         if (disponible !== undefined) {
             filter.disponible = disponible === 'true';
+        } else {
+            filter.disponible = true;
+        }
+
+        if (categoriaId) {
+            const resolved = await resolveCategoriaFilter(categoriaId);
+            if (resolved) {
+                andConditions.push({
+                    $or: [
+                    { categoriaId: resolved.categoriaId },
+                    {
+                        categoria: {
+                            $regex: `^${escapeRegex(normalizeText(resolved.categoriaNombre))}$`,
+                            $options: 'i'
+                        }
+                    }
+                    ]
+                });
+            }
         }
 
         if (categoria) {
             const normalizedCategoria = normalizeText(categoria);
-            filter.categoria = {
-                $regex: escapeRegex(normalizedCategoria),
-                $options: 'i'
-            };
+            andConditions.push({
+                categoria: {
+                    $regex: `^${escapeRegex(normalizedCategoria)}$`,
+                    $options: 'i'
+                }
+            });
         }
 
         if (q) {
             const normalizedQ = normalizeText(q);
-            filter.$or = [
+            andConditions.push({
+                $or: [
                 { nombre: { $regex: escapeRegex(normalizedQ), $options: 'i' } },
                 { descripcion: { $regex: escapeRegex(normalizedQ), $options: 'i' } }
-            ];
+                ]
+            });
+        }
+
+        if (andConditions.length > 0) {
+            filter.$and = andConditions;
         }
 
         const electrodomesticos = await Electrodomestico.find(filter)
             .lean()
             .sort({ createdAt: -1 });
 
+        const categorias = await ElectrodomesticoCategoria.find({ disponible: true })
+            .select('_id nombre')
+            .lean();
+
+        const categoriaByName = new Map(categorias.map((categoriaItem) => [normalizeText(categoriaItem.nombre), categoriaItem]));
+
         return res.json({
             success: true,
-            data: electrodomesticos
+            data: electrodomesticos.map((item) => ({
+                ...item,
+                categoriaId: item.categoriaId || categoriaByName.get(normalizeText(item.categoria))?._id || null
+            }))
         });
     } catch (error) {
         console.error('Error listando electrodomésticos:', error);
@@ -65,9 +147,9 @@ export const crearElectrodomestico = async (req, res) => {
             });
         }
 
-        const { nombre, categoria, subtipo, precio, descripcion, imagenUrl, thumbnailUrl } = req.body;
+        const { nombre, categoria, categoriaId, subtipo, precio, descripcion, imagenUrl, thumbnailUrl } = req.body;
 
-        if (!nombre || !categoria) {
+        if (!nombre || (!categoria && !categoriaId)) {
             return res.status(400).json({
                 success: false,
                 message: 'Validation error',
@@ -78,9 +160,13 @@ export const crearElectrodomestico = async (req, res) => {
             });
         }
 
+        const categoriaLookup = categoriaId ? await ElectrodomesticoCategoria.findById(categoriaId).lean() : null;
+        const categoriaNombre = categoriaLookup?.nombre || categoria;
+
         const nuevoElectrodomestico = new Electrodomestico({
             nombre: nombre.trim(),
-            categoria: categoria.trim(),
+            categoria: String(categoriaNombre || '').trim(),
+            categoriaId: categoriaLookup?._id ? String(categoriaLookup._id) : (categoriaId || null),
             subtipo: subtipo ? subtipo.trim() : null,
             precio: precio || 0,
             descripcion: descripcion || '',
@@ -116,7 +202,7 @@ export const actualizarElectrodomestico = async (req, res) => {
         }
 
         const { id } = req.params;
-        const { nombre, categoria, subtipo, precio, descripcion, imagenUrl, thumbnailUrl, disponible } = req.body;
+        const { nombre, categoria, categoriaId, subtipo, precio, descripcion, imagenUrl, thumbnailUrl, disponible } = req.body;
 
         const electrodomestico = await Electrodomestico.findById(id);
         if (!electrodomestico) {
@@ -127,6 +213,17 @@ export const actualizarElectrodomestico = async (req, res) => {
         }
 
         if (nombre !== undefined) electrodomestico.nombre = nombre.trim();
+        if (categoriaId !== undefined) {
+            if (categoriaId) {
+                const categoriaLookup = await ElectrodomesticoCategoria.findById(categoriaId).lean();
+                electrodomestico.categoriaId = categoriaLookup?._id ? String(categoriaLookup._id) : String(categoriaId);
+                if (categoriaLookup?.nombre) {
+                    electrodomestico.categoria = categoriaLookup.nombre.trim();
+                }
+            } else {
+                electrodomestico.categoriaId = null;
+            }
+        }
         if (categoria !== undefined) electrodomestico.categoria = categoria.trim();
         if (subtipo !== undefined) electrodomestico.subtipo = subtipo ? subtipo.trim() : null;
         if (precio !== undefined) electrodomestico.precio = precio;

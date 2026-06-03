@@ -9,6 +9,7 @@ import {
     eliminarElectrodomestico,
     uploadImagenCloudinary
 } from '../controllers/electrodomesticos.controller.js';
+import { listarElectrodomesticosCategorias } from '../controllers/electrodomesticosCategoria.controller.js';
 
 const router = Router();
 
@@ -34,6 +35,7 @@ const upload = multer({
 });
 
 // Public routes (no authentication required)
+router.get('/categorias', listarElectrodomesticosCategorias);
 router.get('/', listarElectrodomesticos);
 
 // Protected routes (authentication required)

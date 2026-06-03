@@ -5,6 +5,38 @@ import {
   syncProyectoClienteIdentidad
 } from '../services/clienteIdentidad.service.js';
 
+const pagoDetalleSchema = new mongoose.Schema({
+  amount: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  date: {
+    type: String,
+    default: ''
+  },
+  receiptLabel: {
+    type: String,
+    default: 'Ver recibo'
+  },
+  receiptImage: {
+    type: String,
+    default: ''
+  }
+}, { _id: false });
+
+const tareaArchivoSchema = new mongoose.Schema({
+  id: { type: String, default: '' },
+  nombre: { type: String, default: '' },
+  tipo: { type: String, default: 'otro' },
+  url: { type: String, default: '' },
+  key: { type: String, default: '' },
+  provider: { type: String, enum: ['dropbox', 'cloudinary', 'local'], default: 'local' },
+  mimeType: { type: String, default: '' },
+  clienteId: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now }
+}, { _id: false });
+
 const tareaSchema = new mongoose.Schema({
   etapa: { type: String, enum: ['citas','disenos','cotizacion','contrato'], required: true, default: 'citas' },
   estado: { type: String, enum: ['pendiente','completada'], required: true, default: 'pendiente' },
@@ -58,6 +90,28 @@ const tareaSchema = new mongoose.Schema({
     default: null
   },
   clienteId: {
+    type: String,
+    default: ''
+  },
+  archivos: {
+    type: [tareaArchivoSchema],
+    default: []
+  },
+  pagos: {
+    anticipo: { type: pagoDetalleSchema, default: () => ({}) },
+    segundoPago: { type: pagoDetalleSchema, default: () => ({}) },
+    liquidacion: { type: pagoDetalleSchema, default: () => ({}) }
+  },
+  inversion: {
+    type: Number,
+    min: 0,
+    default: 0
+  },
+  etapaActual: {
+    type: String,
+    default: ''
+  },
+  seguimientoNota: {
     type: String,
     default: ''
   },

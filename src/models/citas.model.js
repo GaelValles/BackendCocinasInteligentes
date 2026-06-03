@@ -63,12 +63,17 @@ const citasSchema = new mongoose.Schema({
         default: '',
         trim: true
     },
-    // Ingeniero asignado por el admin
-    ingenieroAsignado: {
+    mapsUrl: {
+        type: String,
+        default: '',
+        trim: true
+    },
+    // Ingeniero(s) asignado(s) por el admin - puede ser uno o varios
+    ingenieroAsignado: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Users',
         default: null
-    },
+    }],
     // Especificaciones al iniciar la cita (medidas, estilo, preferencias)
     especificacionesInicio: {
         medidas: { type: String, default: '' },
