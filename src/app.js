@@ -56,6 +56,7 @@ const parseAllowedOrigins = () => {
 
 const PROD_ALLOWED_ORIGINS = parseAllowedOrigins();
 const allowAllOrigins = process.env.CORS_ALLOW_ALL === 'true';
+const allowVercelPreviewOrigins = process.env.CORS_ALLOW_VERCEL_PREVIEWS === 'true';
 
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -69,11 +70,14 @@ app.use((req, res, next) => {
 const isAllowedOrigin = (origin) => {
     if (allowAllOrigins) return true;
     if (!origin) return true;
-    if (DEV_ALLOWED_ORIGINS.has(origin)) return true;
+    if (process.env.NODE_ENV !== 'production' && DEV_ALLOWED_ORIGINS.has(origin)) return true;
     if (PROD_ALLOWED_ORIGINS.has(origin)) return true;
 
     try {
         const parsed = new URL(origin);
+        if (allowVercelPreviewOrigins && parsed.hostname.endsWith('.vercel.app')) {
+            return true;
+        }
         const isLocalHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
         if (process.env.NODE_ENV === 'production') return false;
         return isLocalHost;
