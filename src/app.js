@@ -54,9 +54,9 @@ const parseAllowedOrigins = () => {
     return new Set(values);
 };
 
-const PROD_ALLOWED_ORIGINS = parseAllowedOrigins();
-const allowAllOrigins = process.env.CORS_ALLOW_ALL === 'true';
-const allowVercelPreviewOrigins = process.env.CORS_ALLOW_VERCEL_PREVIEWS === 'true';
+const allowAllOrigins = () => process.env.CORS_ALLOW_ALL === 'true';
+const isVercelRuntime = () => ['1', 'true'].includes(String(process.env.VERCEL || '').toLowerCase());
+const allowVercelPreviewOrigins = () => process.env.CORS_ALLOW_VERCEL_PREVIEWS === 'true' || (isVercelRuntime() && process.env.CORS_ALLOW_VERCEL_PREVIEWS !== 'false');
 
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -67,15 +67,15 @@ app.use((req, res, next) => {
     next();
 });
 
-const isAllowedOrigin = (origin) => {
-    if (allowAllOrigins) return true;
+export const isAllowedOrigin = (origin) => {
+    if (allowAllOrigins()) return true;
     if (!origin) return true;
     if (process.env.NODE_ENV !== 'production' && DEV_ALLOWED_ORIGINS.has(origin)) return true;
-    if (PROD_ALLOWED_ORIGINS.has(origin)) return true;
+    if (parseAllowedOrigins().has(origin)) return true;
 
     try {
         const parsed = new URL(origin);
-        if (allowVercelPreviewOrigins && parsed.hostname.endsWith('.vercel.app')) {
+        if (allowVercelPreviewOrigins() && parsed.hostname.endsWith('.vercel.app')) {
             return true;
         }
         const isLocalHost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
