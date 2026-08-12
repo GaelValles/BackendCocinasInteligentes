@@ -3,6 +3,16 @@ import { TOKEN_SECRET } from "../config.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import {createAccessToken} from "../libs/jwt.js";
+import { getTokenFromRequest } from "../middlewares/validateToken.js";
+
+const buildUserPayload = (user) => ({
+    id: user._id,
+    nombre: user.nombre,
+    correo: user.correo,
+    telefono: user.telefono,
+    rol: user.rol,
+    createdAt: user.createdAt
+});
 
 const authCookieOptions = () => {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -36,19 +46,17 @@ export const register = async (req, res) => {
 
         const AdminSaved = await newAdmin.save();
         const token = await createAccessToken({id: AdminSaved._id})
+        const userPayload = buildUserPayload(AdminSaved);
         
         res.cookie('token', token, authCookieOptions());
         res.json({
             success: true,
             message: 'Usuario creado correctamente',
-            token: token,
+            token,
+            user: userPayload,
             data: {
-                user: {
-                    id: AdminSaved._id,
-                    nombre: AdminSaved.nombre,
-                    correo: AdminSaved.correo,
-                    rol: AdminSaved.rol
-                }
+                token,
+                user: userPayload
             }
         })
 
@@ -112,20 +120,17 @@ export const login = async (req, res) => {
     });
 
     const token = await createAccessToken({id: AdminFound._id,})
+    const userPayload = buildUserPayload(AdminFound);
     
     res.cookie('token', token, authCookieOptions());
     res.json({
         success: true,
         message: 'Login exitoso',
-        token: token,
+        token,
+        user: userPayload,
         data: {
-            user: {
-                id: AdminFound._id,
-                nombre: AdminFound.nombre,
-                correo: AdminFound.correo,
-                telefono: AdminFound.telefono,
-                rol: AdminFound.rol
-            }
+            token,
+            user: userPayload
         }
     })
 
@@ -189,7 +194,7 @@ export const logout = (req, res) => {
 }
 
 export const verifyToken = async (req, res) => {
-    const { token } = req.cookies;
+    const token = getTokenFromRequest(req);
 
     if (!token) return res.status(401).json({ success: false, message: 'No token provided' });
 
@@ -201,15 +206,14 @@ export const verifyToken = async (req, res) => {
             .populate('carros');
 
         if (!adminFound) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+
+        const userPayload = buildUserPayload(adminFound);
         
         return res.json({
             success: true,
+            user: userPayload,
             data: {
-                id: adminFound._id,
-                nombre: adminFound.nombre,
-                correo: adminFound.correo,
-                telefono: adminFound.telefono,
-                rol: adminFound.rol,
+                ...userPayload,
                 carros: adminFound.carros,
                 citas: adminFound.citas,
                 penaltyUntil: adminFound.penaltyUntil || null
@@ -223,7 +227,9 @@ export const perfil = async(req, res) => {
 
     if (!adminFound) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
 
-    return res.json({ success: true, data: adminFound });
+    const userPayload = buildUserPayload(adminFound);
+
+    return res.json({ success: true, user: userPayload, data: userPayload });
 }
 
 export const updatePerfil = async (req, res) => {
@@ -251,16 +257,12 @@ export const getCurrentUser = async (req, res) => {
             });
         }
 
+        const userPayload = buildUserPayload(adminFound);
+
         return res.json({
             success: true,
-            data: {
-                id: adminFound._id,
-                nombre: adminFound.nombre,
-                correo: adminFound.correo,
-                telefono: adminFound.telefono,
-                rol: adminFound.rol,
-                createdAt: adminFound.createdAt
-            }
+            user: userPayload,
+            data: userPayload
         });
     } catch (error) {
         res.status(500).json({

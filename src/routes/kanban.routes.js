@@ -19,4 +19,10 @@ router.get('/cotizacion', getCotizacionColumn);
 router.get('/contrato', getContratoColumn);
 router.get('/seguimiento/alertas', getSeguimientoAlertas);
 
+// Alias compatibles con el frontend
+router.get('/citas/column', getCitasColumn);
+router.get('/disenos/column', getDisenosColumn);
+router.get('/cotizacion/column', getCotizacionColumn);
+router.get('/contrato/column', getContratoColumn);
+
 export default router;

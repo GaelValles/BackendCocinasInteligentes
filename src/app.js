@@ -151,6 +151,7 @@ app.use('/api', async (req, res, next) => {
 
 // Montar las rutas con prefijo /api
 app.use('/api/auth', authRoutes);
+app.use('/api', authRoutes);
 app.use('/api/contacto', contactoRoutes);
 app.use('/api/citas', citasRoutes);
 app.use('/api/dias', diasRoutes);

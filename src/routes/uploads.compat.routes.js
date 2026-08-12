@@ -67,6 +67,8 @@ router.post('/uploads', authRequired, requireEmployee, upload.any(), subirArchiv
 router.post('/uploads/multiple', authRequired, requireEmployee, upload.array('files', 10), subirMultiples);
 router.post('/dropbox/upload', authRequired, requireEmployee, upload.any(), subirArchivo);
 router.post('/files/upload', authRequired, requireEmployee, upload.any(), subirArchivo);
+router.post('/upload', authRequired, requireEmployee, upload.any(), subirArchivo);
+router.post('/upload/multiple', authRequired, requireEmployee, upload.array('files', 10), subirMultiples);
 
 // Compatibilidad con frontend equipamiento (electrodomesticos/extras)
 router.post('/uploads/cloudinary', authRequired, requireEmployee, cloudinaryUpload.any(), uploadCloudinaryCompat);

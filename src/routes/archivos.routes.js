@@ -74,6 +74,11 @@ router.get(
     authRequired,
     obtenerArchivosCliente
 );
+router.get(
+    '/clientes/:clienteId',
+    authRequired,
+    obtenerArchivosCliente
+);
 
 /**
  * GET /api/clientes/:clienteId/archivos/:tipo
@@ -81,6 +86,11 @@ router.get(
  */
 router.get(
     '/cliente/:clienteId/tipo/:tipo',
+    authRequired,
+    obtenerArchivosPorTipo
+);
+router.get(
+    '/clientes/:clienteId/tipo/:tipo',
     authRequired,
     obtenerArchivosPorTipo
 );

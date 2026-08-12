@@ -17,6 +17,8 @@ const router = Router();
 
 // === Rutas públicas de seguimiento ===
 router.post('/login', validateSchema(loginSeguimientoSchema), loginSeguimiento);
+router.post('/auth', validateSchema(loginSeguimientoSchema), loginSeguimiento);
+router.post('/access', validateSchema(loginSeguimientoSchema), loginSeguimiento);
 
 // === Rutas protegidas con tracking token ===
 router.get('/proyecto', trackingAuthRequired, getProyectoSeguimiento);

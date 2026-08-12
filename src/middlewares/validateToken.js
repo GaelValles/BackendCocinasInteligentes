@@ -2,17 +2,34 @@ import jwt from 'jsonwebtoken';
 import { TOKEN_SECRET } from '../config.js';
 import Admin from '../models/admin.model.js';
 
+export const getTokenFromRequest = (req) => {
+    const cookieToken = req.cookies?.token;
+    if (cookieToken) return cookieToken;
+
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === 'string' && authHeader.trim()) {
+        if (authHeader.startsWith('Bearer ')) {
+            return authHeader.substring(7).trim();
+        }
+        return authHeader.trim();
+    }
+
+    const headerToken = req.headers['x-access-token'] || req.headers['x-token'] || req.headers.token;
+    if (typeof headerToken === 'string' && headerToken.trim()) {
+        return headerToken.trim();
+    }
+
+    const queryToken = req.query?.token;
+    if (typeof queryToken === 'string' && queryToken.trim()) {
+        return queryToken.trim();
+    }
+
+    return null;
+};
+
 export const authRequired = async (req, res, next) => {
     try {
-        // Buscar token en cookies o en header Authorization
-        let token = req.cookies.token;
-        
-        if (!token) {
-            const authHeader = req.headers.authorization;
-            if (authHeader && authHeader.startsWith('Bearer ')) {
-                token = authHeader.substring(7);
-            }
-        }
+        const token = getTokenFromRequest(req);
 
         if (!token) {
             return res.status(401).json({ 

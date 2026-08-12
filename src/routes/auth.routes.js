@@ -47,6 +47,10 @@ router.get('/perfil', authRequired, perfil);
 // Ruta para obtener usuario actual (getCurrentUser)
 router.get('/me', authRequired, getCurrentUser);
 
+// Alias compatibles con el frontend/Vercel
+router.get('/profile', authRequired, getCurrentUser);
+router.get('/user/me', authRequired, getCurrentUser);
+
 // Ruta para actualizar contraseña
 router.put('/update-password', authRequired, updatePassword);
 
