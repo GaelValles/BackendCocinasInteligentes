@@ -16,7 +16,7 @@ El frontend espera estas variables:
 
 En Vercel define:
 
-```env
+```envdeve
 NEXT_PUBLIC_API_URL=https://tu-backend.com
 BACKEND_API_URL=https://tu-backend.com
 NEXT_PUBLIC_FILE_UPLOAD_ENDPOINT=/api/proxy/uploads

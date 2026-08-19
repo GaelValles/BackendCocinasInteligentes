@@ -6,6 +6,7 @@ import OrdenTrabajo from "../models/ordenTrabajo.model.js";
 import Notificaciones from "../models/notificaciones.model.js";
 import Tarea from '../models/tarea.model.js';
 import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
+import { verifyRecaptchaToken } from '../services/recaptcha.service.js';
 
 const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'empleado_general', 'staff'];
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
@@ -133,6 +134,18 @@ export const crearCita = async (req, res) => {
         const captchaHeader = req.headers['captcha-token'] || req.headers['captchatoken'] || req.headers['x-captcha-token'];
         if (!captchaHeader) {
             return res.status(400).json({ success: false, message: "reCAPTCHA (captcha-token) es requerido en headers" });
+        }
+
+        const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
+            expectedAction: 'submit_cita'
+        });
+
+        if (!captchaResult.success) {
+            return res.status(400).json({
+                success: false,
+                message: 'La verificación de reCAPTCHA falló',
+                error: captchaResult.error || 'Token inválido o expirado'
+            });
         }
 
     // Validaciones básicas

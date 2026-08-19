@@ -326,3 +326,10 @@ export const obtenerEmpleados = async (req, res) => {
         });
     }
 };
+
+/**
+ * Configuración de Recaptcha
+ */
+export const RECAPTCHA_SITE_KEY = '6Lds7Y0tAAAAADdymSSaK_x-51s-DW5OR5GDnP1n';
+export const RECAPTCHA_ENTERPRISE_PROJECT_ID = 'tu-project-id';
+export const RECAPTCHA_API_KEY = 'tu-api-key';
