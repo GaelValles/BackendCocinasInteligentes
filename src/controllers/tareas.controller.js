@@ -647,7 +647,7 @@ const normalizeAssignedIds = (asignadoA) => {
         .map((item) => {
             if (!item) return null;
             if (typeof item === 'string') return item;
-            if (typeof item === 'object') return item._id || item.id || null;
+            if (typeof item === 'object') return item._id || item.id || item.nombre || item.name || item.correo || item.email || null;
             return null;
         })
         .filter(Boolean)
@@ -658,29 +658,84 @@ const normalizeAssignedIds = (asignadoA) => {
     return Array.from(new Set(normalized));
 };
 
+const isStrictObjectId = (value) => /^[a-fA-F0-9]{24}$/.test(String(value || '').trim());
+
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const buildAssignableUserQuery = () => ({
+    rol: { $in: ROLES_ASIGNABLES },
+    status: true
+});
+
+const matchUserToIdentifier = (user, identifier) => {
+    const trimmed = String(identifier || '').trim();
+    if (!trimmed || !user) return false;
+
+    if (isStrictObjectId(trimmed)) {
+        return String(user._id) === trimmed;
+    }
+
+    const lower = trimmed.toLowerCase();
+    const nombre = String(user.nombre || user.name || '').trim().toLowerCase();
+    const correo = String(user.correo || user.email || '').trim().toLowerCase();
+    const username = String(user.username || '').trim().toLowerCase();
+
+    return nombre === lower || correo === lower || username === lower;
+};
+
 const resolveAssignedUsers = async (assignedIds) => {
-    const normalizedIds = Array.from(new Set((Array.isArray(assignedIds) ? assignedIds : [])
-        .map((id) => String(id || '').trim())
-        .filter(Boolean)));
+    const normalizedIds = normalizeAssignedIds(assignedIds);
 
     if (!normalizedIds.length) {
         return [];
     }
 
-    const users = await Admin.find({
-        _id: { $in: normalizedIds },
-        rol: { $in: ROLES_ASIGNABLES },
-        status: true
-    }).select('_id nombre rol status');
+    const objectIds = normalizedIds.filter(isStrictObjectId);
+    const nameLookups = normalizedIds.filter((id) => !isStrictObjectId(id));
 
-    const foundIds = new Set(users.map((user) => String(user._id)));
-    const missingIds = normalizedIds.filter((id) => !foundIds.has(id));
+    const orConditions = [];
+
+    if (objectIds.length) {
+        orConditions.push({ _id: { $in: objectIds } });
+    }
+
+    for (const lookup of nameLookups) {
+        const trimmed = String(lookup).trim();
+        const lower = trimmed.toLowerCase();
+        orConditions.push(
+            { nombre: new RegExp(`^${escapeRegex(trimmed)}$`, 'i') },
+            { correo: lower }
+        );
+    }
+
+    const users = orConditions.length
+        ? await Admin.find({
+            ...buildAssignableUserQuery(),
+            $or: orConditions
+        }).select('_id nombre rol status correo')
+        : [];
+
+    const resolvedUsers = [];
+    const missingIds = [];
+
+    for (const identifier of normalizedIds) {
+        const user = users.find((candidate) => matchUserToIdentifier(candidate, identifier));
+
+        if (!user) {
+            missingIds.push(identifier);
+            continue;
+        }
+
+        if (!resolvedUsers.some((existing) => String(existing._id) === String(user._id))) {
+            resolvedUsers.push(user);
+        }
+    }
 
     if (missingIds.length) {
         return { error: `No se encontraron responsables válidos para: ${missingIds.join(', ')}` };
     }
 
-    return users;
+    return resolvedUsers;
 };
 
 const mapTask = (tarea, baseUrl = '') => {
@@ -917,6 +972,7 @@ export const crearTarea = async (req, res) => {
             estado,
             asignadoA,
             assignedToIds,
+            assignedTo,
             proyecto,
             proyectoId,
             nombreProyecto,
@@ -1065,11 +1121,13 @@ export const crearTarea = async (req, res) => {
             return res.status(400).json({ success: false, message: notaSeguimientoResolved.message });
         }
 
-        const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds);
+        const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds ?? assignedTo);
         const assignedUsers = await resolveAssignedUsers(assignedIds);
         if (assignedUsers.error) {
             return res.status(404).json({ success: false, message: assignedUsers.error });
         }
+
+        const resolvedAssignedIds = assignedUsers.map((user) => String(user._id));
 
         if (source.sourceType && source.sourceId) {
             const existentePorOrigen = await Tarea.findOne({
@@ -1092,7 +1150,7 @@ export const crearTarea = async (req, res) => {
         const nuevaTarea = new Tarea({
             etapa,
             estado: estado || 'pendiente',
-            asignadoA: assignedIds,
+            asignadoA: resolvedAssignedIds,
             asignadoANombre: assignedUsers.map((u) => u.nombre),
             proyectoId: projectResult.proyectoId,
             nombreProyecto: nombreProyecto || projectResult.nombreProyecto || '',
@@ -1123,7 +1181,7 @@ export const crearTarea = async (req, res) => {
             cliente: resolvedCliente,
             pagos: normalizedPagos.value,
             inversion: inversionResolved.hasValue ? inversionResolved.value : 0,
-            etapaActual: etapaActualResolved.value || tarea.etapaActual || '',
+            etapaActual: etapaActualResolved.value || '',
             seguimientoNota: notaSeguimientoResolved.value || '',
             // Keep legacy IDs synced during transition.
             sourceCitaId: source.sourceType === 'cita' ? source.sourceId : undefined,
@@ -1515,7 +1573,7 @@ export const asignarTrabajadoresTarea = async (req, res) => {
             asignadoANombre: Array.isArray(tarea.asignadoANombre) ? [...tarea.asignadoANombre] : []
         };
 
-        tarea.asignadoA = assignedIds;
+        tarea.asignadoA = assignedUsers.map((user) => String(user._id));
         tarea.asignadoANombre = assignedUsers.map((user) => user.nombre);
 
         pushHistory(tarea, req, 'assign_workers', {
