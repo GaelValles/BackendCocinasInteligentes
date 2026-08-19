@@ -738,6 +738,35 @@ const resolveAssignedUsers = async (assignedIds) => {
     return resolvedUsers;
 };
 
+const resolveAuthenticatedAssignableUser = async (req) => {
+    if (!req.admin?._id) return null;
+
+    return Admin.findOne({
+        _id: req.admin._id,
+        ...buildAssignableUserQuery()
+    }).select('_id nombre rol status correo');
+};
+
+const resolveAssignedUsersForCreate = async (assignedIds, req) => {
+    const normalizedIds = normalizeAssignedIds(assignedIds);
+    const resolvedUsers = await resolveAssignedUsers(normalizedIds);
+
+    if (!resolvedUsers.error) {
+        return resolvedUsers;
+    }
+
+    if (!normalizedIds.length) {
+        return [];
+    }
+
+    const fallbackUser = await resolveAuthenticatedAssignableUser(req);
+    if (fallbackUser) {
+        return [fallbackUser];
+    }
+
+    return resolvedUsers;
+};
+
 const mapTask = (tarea, baseUrl = '') => {
     const sourceType = tarea.sourceType
         || (tarea.sourceCitaId ? 'cita' : null)
@@ -1122,7 +1151,7 @@ export const crearTarea = async (req, res) => {
         }
 
         const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds ?? assignedTo);
-        const assignedUsers = await resolveAssignedUsers(assignedIds);
+        const assignedUsers = await resolveAssignedUsersForCreate(assignedIds, req);
         if (assignedUsers.error) {
             return res.status(404).json({ success: false, message: assignedUsers.error });
         }

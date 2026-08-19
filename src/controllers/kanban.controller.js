@@ -204,6 +204,11 @@ export const getDisenosColumn = getColumn('disenos');
 export const getCotizacionColumn = getColumn('cotizacion');
 export const getContratoColumn = getColumn('contrato');
 
+export const getEtapaAllColumn = async (req, res) => {
+    const etapa = String(req.params.etapa || '').trim().toLowerCase();
+    return getColumn(etapa)(req, res);
+};
+
 export const getSeguimientoAlertas = async (req, res) => {
     try {
         const dias = Number(req.query.dias || 3);
