@@ -130,10 +130,18 @@ export const crearCita = async (req, res) => {
       informacionAdicional
     } = req.body;
 
-        // Verificar token de captcha en headers (frontend envía en headers)
-        const captchaHeader = req.headers['captcha-token'] || req.headers['captchatoken'] || req.headers['x-captcha-token'];
+        // Verificar token de captcha en headers o body (frontend puede enviarlo de varias formas)
+        const captchaHeader = req.headers['captcha-token']
+            || req.headers['captchatoken']
+            || req.headers['x-captcha-token']
+            || req.headers['cf-turnstile-response']
+            || req.headers['turnstile-response']
+            || req.body?.captchaToken
+            || req.body?.token
+            || req.body?.['cf-turnstile-response'];
+
         if (!captchaHeader) {
-            return res.status(400).json({ success: false, message: "reCAPTCHA (captcha-token) es requerido en headers" });
+            return res.status(400).json({ success: false, message: "El captcha (captcha-token o cf-turnstile-response) es requerido" });
         }
 
         const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
@@ -143,7 +151,7 @@ export const crearCita = async (req, res) => {
         if (!captchaResult.success) {
             return res.status(400).json({
                 success: false,
-                message: 'La verificación de reCAPTCHA falló',
+                message: 'La verificación del captcha falló',
                 error: captchaResult.error || 'Token inválido o expirado'
             });
         }
@@ -1227,6 +1235,58 @@ export const obtenerDisponibilidad = async (req, res) => {
             success: false, 
             message: "Error al consultar disponibilidad"
         });
+    }
+};
+
+// Alias público para compatibilidad con frontend que intenta cargar citas sin auth
+export const obtenerCitasPublicasCompat = async (req, res) => {
+    try {
+        const { fecha } = req.query;
+
+        if (fecha) {
+            const fechaInicio = new Date(`${fecha}T00:00:00`);
+            const fechaFin = new Date(`${fecha}T23:59:59.999`);
+
+            const citas = await Citas.find({
+                fechaAgendada: { $gte: fechaInicio, $lte: fechaFin },
+                estado: { $in: ['programada', 'en_proceso'] }
+            }).select('fechaAgendada estado -_id').lean();
+
+            const horariosOcupados = citas.map(cita => {
+                const fechaCita = new Date(cita.fechaAgendada);
+                const horas = String(fechaCita.getHours()).padStart(2, '0');
+                const minutos = String(fechaCita.getMinutes()).padStart(2, '0');
+                return `${horas}:${minutos}`;
+            });
+
+            return res.status(200).json({
+                success: true,
+                fecha,
+                horariosOcupados
+            });
+        }
+
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+
+        const citas = await Citas.find({
+            estado: { $in: ['programada', 'en_proceso'] },
+            fechaAgendada: { $gte: hoy }
+        }).select('fechaAgendada estado -_id').lean();
+
+        const data = citas.map(cita => {
+            const fechaCita = new Date(cita.fechaAgendada);
+            return {
+                fecha: fechaCita.toISOString().split('T')[0],
+                hora: `${String(fechaCita.getHours()).padStart(2, '0')}:${String(fechaCita.getMinutes()).padStart(2, '0')}`,
+                estado: cita.estado
+            };
+        });
+
+        return res.status(200).json({ success: true, data });
+    } catch (error) {
+        console.error('Error en obtenerCitasPublicasCompat:', error);
+        return res.status(500).json({ success: false, message: 'Error al consultar citas públicas' });
     }
 };
 

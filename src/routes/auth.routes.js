@@ -41,6 +41,9 @@ router.post('/logout', logout);
 // Ruta para verificar token (usado en validación de sesión)
 router.get('/verify', verifyToken);
 
+// Alias compatible para el frontend que consulta /api/auth/session
+router.get('/session', verifyToken);
+
 // Ruta para obtener perfil del usuario autenticado
 router.get('/perfil', authRequired, perfil);
 

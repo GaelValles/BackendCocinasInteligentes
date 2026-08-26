@@ -19,7 +19,8 @@ import {
     obtenerCitasIngeniero,
     actualizarEspecificaciones,
     obtenerDisponibilidad,
-    obtenerHorariosOcupados
+    obtenerHorariosOcupados,
+    obtenerCitasPublicasCompat
 } from "../controllers/citas.controller.js";
 
 const router = Router();
@@ -34,6 +35,13 @@ router.get('/disponibilidad', obtenerDisponibilidad);
 
 // Ruta pública para obtener horarios ocupados (simple y optimizado)
 router.get('/horarios-ocupados', obtenerHorariosOcupados);
+
+// Alias público para compatibilidad con integraciones previas del frontend
+router.get('', obtenerCitasPublicasCompat);
+router.get('/', obtenerCitasPublicasCompat);
+router.get('/all', obtenerCitasPublicasCompat);
+router.get('/getAll', obtenerCitasPublicasCompat);
+router.get('/getAllCitas', obtenerCitasPublicasCompat);
 
 // ========== RUTAS AUTENTICADAS ==========
 
@@ -83,8 +91,8 @@ router.put('/:id/especificaciones', authRequired, actualizarEspecificaciones);
 // Ruta para finalizar cita (usado en "Finalizar cita" del diagrama, cambia estado a "completada")
 router.put('/:id/finalizar', authRequired, finalizarCita);
 
-// Ruta administrativa para ver todas las citas del sistema
-router.get('/getAllCitas', authRequired, getAllCitas);
+// Ruta administrativa para ver todas las citas del sistema (protegida)
+router.get('/admin/getAllCitas', authRequired, getAllCitas);
 
 // Ruta para actualizar estado de cita (usado en "Seleccionar estado" del diagrama)
 router.put('/updateEstado/:id', authRequired, updateCitaEstado);

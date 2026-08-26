@@ -20,10 +20,17 @@ export const crearContacto = async (req, res) => {
     try {
         // PASO 2.1: Validar datos recibidos
         const { nombre, telefono, correo, mensaje } = req.body;
-        const captchaHeader = req.headers['captcha-token'] || req.headers['captchatoken'] || req.headers['x-captcha-token'];
+        const captchaHeader = req.headers['captcha-token']
+            || req.headers['captchatoken']
+            || req.headers['x-captcha-token']
+            || req.headers['cf-turnstile-response']
+            || req.headers['turnstile-response']
+            || req.body?.captchaToken
+            || req.body?.token
+            || req.body?.['cf-turnstile-response'];
 
         if (!captchaHeader) {
-            return res.status(400).json({ message: 'reCAPTCHA (captcha-token) es requerido en headers' });
+            return res.status(400).json({ message: 'El captcha (captcha-token o cf-turnstile-response) es requerido' });
         }
 
         const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
@@ -32,7 +39,7 @@ export const crearContacto = async (req, res) => {
 
         if (!captchaResult.success) {
             return res.status(400).json({
-                message: 'La verificación de reCAPTCHA falló',
+                message: 'La verificación del captcha falló',
                 error: captchaResult.error || 'Token inválido o expirado'
             });
         }
