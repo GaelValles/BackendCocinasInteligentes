@@ -40,18 +40,33 @@ const DEV_ALLOWED_ORIGINS = new Set([
 ]);
 
 const parseAllowedOrigins = () => {
-    const values = [
+    const rawValues = [
         process.env.CORS_ALLOWED_ORIGINS,
         process.env.FRONTEND_URL,
         process.env.FRONTEND_PUBLIC_URL,
-        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined
+        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+        'https://kuchecocinasinteligentes.com',
+        'https://www.kuchecocinasinteligentes.com'
     ]
         .filter(Boolean)
         .flatMap((item) => String(item).split(','))
-        .map((item) => item.trim())
+        .map((item) => item.trim().replace(/\/+$/, ''))
         .filter(Boolean);
 
-    return new Set(values);
+    const expanded = [];
+    for (const val of rawValues) {
+        expanded.push(val);
+        try {
+            const url = new URL(val);
+            if (url.hostname.startsWith('www.')) {
+                expanded.push(`${url.protocol}//${url.hostname.slice(4)}${url.port ? ':' + url.port : ''}`);
+            } else if (!url.hostname.includes('localhost') && !url.hostname.includes('127.0.0.1')) {
+                expanded.push(`${url.protocol}//www.${url.hostname}${url.port ? ':' + url.port : ''}`);
+            }
+        } catch {}
+    }
+
+    return new Set(expanded);
 };
 
 const allowAllOrigins = () => process.env.CORS_ALLOW_ALL === 'true';
