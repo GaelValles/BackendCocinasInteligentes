@@ -20,10 +20,12 @@ const router = Router()
 // Ruta para login (usado en "Login" del diagrama) y alias
 router.post('/login', login);
 router.post('/signin', login);
+router.post('/sign-in', login);
 
 // Ruta para registro de nuevos usuarios (usado en "Registrar usuario" del diagrama) y alias
 router.post('/register', register);
 router.post('/signup', register);
+router.post('/sign-up', register);
 
 // Ruta para agregar usuario desde admin (usado en "Asignar personas a empresa" del diagrama)
 router.post('/addUser', authRequired, subirUser);

@@ -104,42 +104,49 @@ export const subirUser = async (req, res) => {
 
 
 export const login = async (req, res) => {
-    const {correo, password}= req.body;
+    const correo = (req.body?.correo || req.body?.email || req.body?.usuario || '').trim();
+    const password = req.body?.password || req.body?.contrasena || req.body?.passwordHash || '';
     try {
-    const AdminFound = await Admin.findOne({correo});
-
-    if (!AdminFound) return res.status(400).json({
-        success: false,
-        message: 'Usuario no encontrado'
-    });
-    const isMatch = await bcrypt.compare(password, AdminFound.password);
-    
-    if (!isMatch) return res.status(400).json({
-        success: false,
-        message: 'Contraseña incorrecta'
-    });
-
-    const token = await createAccessToken({id: AdminFound._id,})
-    const userPayload = buildUserPayload(AdminFound);
-    
-    res.cookie('token', token, authCookieOptions());
-    res.json({
-        success: true,
-        message: 'Login exitoso',
-        token,
-        user: userPayload,
-        data: {
-            token,
-            user: userPayload
+        if (!correo || !password) {
+            return res.status(400).json({
+                success: false,
+                message: 'Correo y contraseña son requeridos'
+            });
         }
-    })
 
+        const AdminFound = await Admin.findOne({ correo: { $regex: new RegExp(`^${correo}$`, 'i') } });
+
+        if (!AdminFound) return res.status(400).json({
+            success: false,
+            message: 'Usuario no encontrado'
+        });
+        const isMatch = await bcrypt.compare(password, AdminFound.password);
+        
+        if (!isMatch) return res.status(400).json({
+            success: false,
+            message: 'Contraseña incorrecta'
+        });
+
+        const token = await createAccessToken({id: AdminFound._id,});
+        const userPayload = buildUserPayload(AdminFound);
+        
+        res.cookie('token', token, authCookieOptions());
+        res.json({
+            success: true,
+            message: 'Login exitoso',
+            token,
+            user: userPayload,
+            data: {
+                token,
+                user: userPayload
+            }
+        });
 
     } catch (error) {
         res.status(500).json({ 
             success: false,
             message: error.message
-        })
+        });
     }
 };
 
