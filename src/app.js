@@ -106,10 +106,10 @@ import path from 'path';
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Health check
-app.get('/', (req, res) => {
+const healthResponse = (req, res) => {
     res.json({
         success: true,
-        message: 'Backend Küche API funcionando correctamente',
+        message: 'Küche API funcionando correctamente',
         version: '2.1.0',
         endpoints: {
             auth: '/api/auth/login, /api/auth/register, /api/auth/logout, /api/auth/verify, /api/auth/me',
@@ -118,8 +118,8 @@ app.get('/', (req, res) => {
             catalogos: '/api/catalogos',
             usuarios: '/api/usuarios',
             materiales: '/api/materiales',
-                        electrodomesticos: '/api/electrodomesticos',
-                        extras: '/api/extras',
+            electrodomesticos: '/api/electrodomesticos',
+            extras: '/api/extras',
             citas: '/api/citas',
             contacto: '/api/contacto',
             disenos: '/api/disenos',
@@ -133,7 +133,11 @@ app.get('/', (req, res) => {
             upload: '/api/uploads'
         }
     });
-});
+};
+
+app.get('/', healthResponse);
+app.get('/health', healthResponse);
+app.get('/api/health', healthResponse);
 
 // En serverless, garantizar conexión DB antes de atender cualquier endpoint /api.
 app.use('/api', async (req, res, next) => {
