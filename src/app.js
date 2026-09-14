@@ -186,13 +186,13 @@ app.use('/api/herrajes', herrajesRoutes);
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    console.error('Error no capturado en la aplicación:', err);
     res.status(500).json({
         success: false,
-        message: 'Algo salió mal!',
+        message: err?.message || 'Algo salió mal!',
         error: {
-            message: err.message,
-            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+            message: err?.message,
+            stack: process.env.NODE_ENV === 'development' ? err?.stack : undefined
         }
     });
 });
