@@ -30,8 +30,13 @@ import cronRoutes from './routes/cron.routes.js';
 import { startFollowUpCron } from './services/followUpCron.js';
 import { ensureDbConnection } from './db.js';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
 
 const app = express();
 const DEV_ALLOWED_ORIGINS = new Set([

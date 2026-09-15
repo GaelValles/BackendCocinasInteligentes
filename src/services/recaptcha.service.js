@@ -1,6 +1,11 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env'), quiet: true });
 
 const ENTERPRISE_API_BASE = 'https://recaptchaenterprise.googleapis.com/v1';
 const PROJECT_ID_KEYS = ['RECAPTCHA_ENTERPRISE_PROJECT_ID', 'RECAPTCHA_PROJECT_ID', 'GOOGLE_RECAPTCHA_PROJECT_ID'];

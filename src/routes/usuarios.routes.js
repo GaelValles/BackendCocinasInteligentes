@@ -10,8 +10,10 @@ import {
 
 const router = Router();
 
-// Crear usuario operativo (Integrantes modal)
+// Crear usuario operativo (Integrantes modal) y alias compatibles
 router.post('/', authRequired, requireStaff, crear);
+router.post('/crear', authRequired, requireStaff, crear);
+router.post('/agregar', authRequired, requireStaff, crear);
 
 // Listar todos los usuarios
 router.get('/', authRequired, listar);

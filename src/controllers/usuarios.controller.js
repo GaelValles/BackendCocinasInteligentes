@@ -25,37 +25,43 @@ const isEmailValid = (value = '') => {
  */
 export const crear = async (req, res) => {
     try {
-        const { nombre, correo, rol, password } = req.body || {};
+        const body = req.body || {};
+        const rawNombre = body.nombre || body.name;
+        const rawCorreo = body.correo || body.email;
+        const rawRol = body.rol || body.role;
+        const rawTelefono = body.telefono || body.phone;
+        const rawPasswordInput = body.password || body.contrasena;
 
-        if (!nombre || String(nombre).trim().length === 0) {
+        if (!rawNombre || String(rawNombre).trim().length === 0) {
             return res.status(400).json({
                 success: false,
                 message: 'nombre es obligatorio'
             });
         }
 
-        if (!correo || String(correo).trim().length === 0) {
+        if (!rawCorreo || String(rawCorreo).trim().length === 0) {
             return res.status(400).json({
                 success: false,
                 message: 'correo es obligatorio'
             });
         }
 
-        if (!isEmailValid(correo)) {
+        if (!isEmailValid(rawCorreo)) {
             return res.status(400).json({
                 success: false,
                 message: 'correo invalido'
             });
         }
 
-        if (!rol || !['admin', 'arquitecto', 'empleado'].includes(String(rol))) {
+        const rolNormalized = String(rawRol || 'empleado').trim().toLowerCase();
+        if (!ROLES_ASIGNABLES.includes(rolNormalized)) {
             return res.status(400).json({
                 success: false,
-                message: 'rol invalido. Valores permitidos: admin, arquitecto, empleado'
+                message: `rol invalido. Valores permitidos: ${ROLES_ASIGNABLES.join(', ')}`
             });
         }
 
-        const correoNormalizado = String(correo).trim().toLowerCase();
+        const correoNormalizado = String(rawCorreo).trim().toLowerCase();
         const existe = await Admin.findOne({ correo: correoNormalizado }).select('_id');
         if (existe) {
             return res.status(409).json({
@@ -64,17 +70,17 @@ export const crear = async (req, res) => {
             });
         }
 
-        const rawPassword = password && String(password).trim().length >= 6
-            ? String(password)
+        const rawPassword = rawPasswordInput && String(rawPasswordInput).trim().length >= 6
+            ? String(rawPasswordInput)
             : generateTempPassword();
 
         const passwordHash = await bcrypt.hash(rawPassword, 10);
 
         const nuevoUsuario = new Admin({
-            nombre: String(nombre).trim(),
+            nombre: String(rawNombre).trim(),
             correo: correoNormalizado,
-            rol: String(rol),
-            telefono: 'N/A',
+            rol: rolNormalized,
+            telefono: rawTelefono ? String(rawTelefono).trim() : 'N/A',
             password: passwordHash,
             status: true
         });
@@ -86,8 +92,10 @@ export const crear = async (req, res) => {
             message: 'Usuario creado correctamente',
             data: {
                 _id: saved._id,
+                id: saved._id,
                 nombre: saved.nombre,
                 correo: saved.correo,
+                telefono: saved.telefono,
                 rol: saved.rol,
                 activo: saved.status !== false,
                 createdAt: saved.createdAt,

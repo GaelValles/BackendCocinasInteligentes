@@ -211,12 +211,12 @@ export const uploadImagenCloudinary = async (req, res) => {
             success: true,
             message: 'Imagen subida correctamente',
             data: {
-                secureUrl: uploadResult.secure_url,
-                thumbnailUrl: uploadResult.thumbnail_url || uploadResult.secure_url,
-                publicId: uploadResult.public_id,
-                width: uploadResult.width,
-                height: uploadResult.height,
-                format: uploadResult.format
+                secureUrl: uploadResult.url || uploadResult.secure_url,
+                thumbnailUrl: uploadResult.url || uploadResult.thumbnail_url || uploadResult.secure_url,
+                publicId: uploadResult.publicId || uploadResult.public_id,
+                url: uploadResult.url,
+                key: uploadResult.key,
+                provider: uploadResult.provider || 'cloudinary'
             }
         });
     } catch (error) {

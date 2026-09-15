@@ -1,6 +1,13 @@
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-dotenv.config({ quiet: true }); // Carga variables de entorno sin ruido en logs
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
+
 // Validar que la variable de entorno exista y dar un mensaje claro si falta
 if (!process.env.connectDBUsers) {
   console.error('\n[FATAL] La variable de entorno `connectDBUsers` no está configurada.');
