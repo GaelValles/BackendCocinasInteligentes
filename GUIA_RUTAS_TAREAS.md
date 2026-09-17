@@ -7,6 +7,8 @@ Permisos generales:
 - **ingeniero / empleado / empleado_general / staff** (`isOperativo`): solo pueden ver/editar tareas donde aparecen en `asignadoA`.
 - Crear tarea, actualizar (PUT/PATCH `:id`), asignar trabajadores y eliminar: **solo rol `admin`** (o `isStaff` para eliminar).
 
+> Documentación relacionada: [Guía Frontend: Cron de Seguimiento y Correos](../../GUIA_FRONTEND_CRON_SEGUIMIENTO_EMAIL.md).
+
 ---
 
 ## 1. `GET /api/tareas`

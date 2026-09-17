@@ -57,6 +57,8 @@ const tareaSchema = new mongoose.Schema({
     default: []
   },
   followUpLastReminderAt: { type: Date, default: null },
+  followUpProcessingAt: { type: Date, default: null },
+  followUpProcessingStep: { type: Number, enum: [3, 8, 13], default: null },
   citaStarted: { type: Boolean, default: false },
   citaFinished: { type: Boolean, default: false },
   designApprovedByAdmin: { type: Boolean, default: false },

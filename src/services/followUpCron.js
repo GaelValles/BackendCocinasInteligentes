@@ -4,16 +4,31 @@ import Tarea from '../models/tarea.model.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FOLLOWUP_REMINDER_STEPS = [3, 8, 13];
+const FOLLOWUP_CLAIM_TTL_MS = 15 * 60 * 1000;
 
-const createMailTransport = () => nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-    }
-});
+const smtpConfig = () => {
+    const host = String(process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+    const rawPassword = String(process.env.SMTP_PASS || '').trim();
+    const password = /gmail|googlemail/i.test(host) ? rawPassword.replace(/\s+/g, '') : rawPassword;
+
+    return {
+        host,
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: String(process.env.SMTP_SECURE || 'false').trim().toLowerCase() === 'true',
+        requireTLS: String(process.env.SMTP_REQUIRE_TLS || 'false').trim().toLowerCase() === 'true',
+        auth: {
+            user: String(process.env.SMTP_USER || '').trim(),
+            pass: password
+        }
+    };
+};
+
+let mailTransport = null;
+
+const createMailTransport = () => {
+    if (!mailTransport) mailTransport = nodemailer.createTransport(smtpConfig());
+    return mailTransport;
+};
 
 const buildReminderMail = ({ tarea, elapsedDays, stepDays }) => {
     const clienteNombre = tarea?.cliente?.nombre || tarea?.cita?.nombreCliente || 'Sin nombre';
@@ -70,20 +85,23 @@ const sendFollowUpReminderEmail = async ({ tarea, elapsedDays, stepDays }) => {
     const transporter = createMailTransport();
     const mail = buildReminderMail({ tarea, elapsedDays, stepDays });
 
-    await transporter.sendMail({
-        from: smtpUser,
+    const result = await transporter.sendMail({
+        from: String(process.env.SMTP_FROM || smtpUser).trim(),
         to: emailEmpresa,
         subject: mail.subject,
         html: mail.html,
         text: mail.text
     });
+
+    return {
+        messageId: result.messageId || null,
+        accepted: Array.isArray(result.accepted) ? result.accepted : [],
+        rejected: Array.isArray(result.rejected) ? result.rejected : []
+    };
 };
 
 /**
- * Daily cron job to auto-inactivate tasks in 'contrato' stage
- * after 10 days of no activity (followUpEnteredAt threshold)
- * 
- * Runs daily at 00:00 (midnight)
+ * Local-only scheduler. Vercel uses the configured Vercel Cron instead.
  */
 export const startFollowUpCron = () => {
     try {
@@ -125,8 +143,6 @@ export const runFollowUpAutomation = async () => {
         let inactivated = 0;
 
         for (const tarea of tasksInFollowUp) {
-            tarea.historialCambios = Array.isArray(tarea.historialCambios) ? tarea.historialCambios : [];
-
             const enteredAt = Number(tarea.followUpEnteredAt);
             if (!Number.isFinite(enteredAt) || enteredAt <= 0) {
                 continue;
@@ -142,54 +158,103 @@ export const runFollowUpAutomation = async () => {
                 continue;
             }
 
-            try {
-                await sendFollowUpReminderEmail({ tarea, elapsedDays, stepDays: nextStep });
+            const claimCutoff = new Date(now - FOLLOWUP_CLAIM_TTL_MS);
+            const claimedTask = await Tarea.findOneAndUpdate(
+                {
+                    _id: tarea._id,
+                    etapa: 'contrato',
+                    followUpStatus: 'pendiente',
+                    followUpReminderStepsSent: { $ne: nextStep },
+                    $or: [
+                        { followUpProcessingAt: null },
+                        { followUpProcessingAt: { $lt: claimCutoff } }
+                    ]
+                },
+                {
+                    $set: {
+                        followUpProcessingAt: new Date(now),
+                        followUpProcessingStep: nextStep
+                    }
+                },
+                { new: true }
+            );
 
-                tarea.followUpReminderStepsSent = [...new Set([...sentSteps, nextStep])].sort((a, b) => a - b);
-                tarea.followUpLastReminderAt = new Date();
-                tarea.historialCambios.push({
-                    by: 'SYSTEM_FOLLOWUP_CRON',
-                    action: 'followup-reminder-email-sent',
-                    changes: {
-                        stepDays: nextStep,
-                        elapsedDays,
-                        sentTo: process.env.EMAIL_EMPRESA
-                    },
-                    at: new Date()
-                });
+            if (!claimedTask) continue;
+
+            try {
+                await sendFollowUpReminderEmail({ tarea: claimedTask, elapsedDays, stepDays: nextStep });
+
+                const changes = {
+                    stepDays: nextStep,
+                    elapsedDays,
+                    sentTo: process.env.EMAIL_EMPRESA
+                };
+                const update = {
+                    $addToSet: { followUpReminderStepsSent: nextStep },
+                    $set: { followUpLastReminderAt: new Date(now) },
+                    $unset: { followUpProcessingAt: 1, followUpProcessingStep: 1 },
+                    $push: {
+                        historialCambios: {
+                            by: 'SYSTEM_FOLLOWUP_CRON',
+                            action: 'followup-reminder-email-sent',
+                            changes,
+                            at: new Date(now)
+                        }
+                    }
+                };
 
                 reminded += 1;
 
                 if (nextStep === 13 && tarea.followUpStatus === 'pendiente') {
-                    tarea.followUpStatus = 'inactivo';
-                    tarea.estado = 'completada';
-                    tarea.historialCambios.push({
-                        by: 'SYSTEM_FOLLOWUP_CRON',
-                        action: 'auto-inactivated-after-followup-sequence',
-                        changes: {
-                            followUpStatus: 'inactivo',
-                            elapsedDays,
-                            sequence: FOLLOWUP_REMINDER_STEPS
-                        },
-                        at: new Date()
-                    });
+                    update.$set.followUpStatus = 'inactivo';
+                    update.$set.estado = 'completada';
+                    update.$push.historialCambios = {
+                        $each: [
+                            update.$push.historialCambios,
+                            {
+                                by: 'SYSTEM_FOLLOWUP_CRON',
+                                action: 'auto-inactivated-after-followup-sequence',
+                                changes: {
+                                    followUpStatus: 'inactivo',
+                                    elapsedDays,
+                                    sequence: FOLLOWUP_REMINDER_STEPS
+                                },
+                                at: new Date(now)
+                            }
+                        ]
+                    };
                     inactivated += 1;
                 }
 
-                await tarea.save();
-            } catch (mailError) {
-                console.error(`❌ [CRON] Could not send follow-up reminder for task ${tarea._id}:`, mailError.message);
-                tarea.historialCambios.push({
-                    by: 'SYSTEM_FOLLOWUP_CRON',
-                    action: 'followup-reminder-email-failed',
-                    changes: {
-                        stepDays: nextStep,
-                        elapsedDays,
-                        error: mailError.message
+                await Tarea.updateOne(
+                    {
+                        _id: claimedTask._id,
+                        etapa: 'contrato',
+                        followUpStatus: 'pendiente',
+                        followUpProcessingStep: nextStep
                     },
-                    at: new Date()
-                });
-                await tarea.save();
+                    update
+                );
+            } catch (mailError) {
+                console.error(`❌ [CRON] Could not send follow-up reminder for task ${claimedTask._id}:`, mailError.message);
+                await Tarea.updateOne(
+                    { _id: claimedTask._id, followUpProcessingStep: nextStep },
+                    {
+                        $unset: { followUpProcessingAt: 1, followUpProcessingStep: 1 },
+                        $push: {
+                            historialCambios: {
+                                by: 'SYSTEM_FOLLOWUP_CRON',
+                                action: 'followup-reminder-email-failed',
+                                changes: {
+                                    stepDays: nextStep,
+                                    elapsedDays,
+                                    error: mailError.message
+                                },
+                                at: new Date(now)
+                            }
+                        }
+                    }
+                );
             }
         }
 
@@ -207,14 +272,3 @@ export const runFollowUpAutomation = async () => {
     }
 };
 
-/**
- * Manual trigger to run follow-up automation immediately.
- * Useful for testing or manual runs
- */
-export const triggerFollowUpCheck = async () => {
-    console.log('🚀 [MANUAL TRIGGER] Running follow-up automation check...');
-    return runFollowUpAutomation();
-};
-
-// Backward-compatible export name used by older code paths.
-export const runFollowUpAutoInactivate = runFollowUpAutomation;
