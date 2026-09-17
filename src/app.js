@@ -122,7 +122,6 @@ app.use(cookieParser());
 // Normalize JSON responses into the frontend envelope
 app.use(responseWrapper);
 // Serve uploaded files
-import path from 'path';
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Health check
