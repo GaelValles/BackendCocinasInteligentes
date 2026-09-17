@@ -10,6 +10,7 @@ const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'
 
 const mapCategoria = (categoria, fallbackNombre = '') => ({
     _id: String(categoria?._id || normalizeText(fallbackNombre)),
+    modulo: 'electrodomesticos',
     nombre: categoria?.nombre || fallbackNombre,
     descripcion: categoria?.descripcion || '',
     orden: categoria?.orden ?? 0,
@@ -112,7 +113,10 @@ export const crearElectrodomesticoCategoria = async (req, res) => {
         return res.status(201).json({
             success: true,
             message: 'Categoría de electrodomésticos creada correctamente',
-            data: nuevaCategoria
+            data: {
+                ...nuevaCategoria.toObject(),
+                modulo: 'electrodomesticos'
+            }
         });
     } catch (error) {
         console.error('Error creando categoría de electrodomésticos:', error);
@@ -149,7 +153,10 @@ export const actualizarElectrodomesticoCategoria = async (req, res) => {
         return res.json({
             success: true,
             message: 'Categoría de electrodomésticos actualizada correctamente',
-            data: categoria
+            data: {
+                ...categoria.toObject(),
+                modulo: 'electrodomesticos'
+            }
         });
     } catch (error) {
         console.error('Error actualizando categoría de electrodomésticos:', error);
@@ -178,7 +185,10 @@ export const eliminarElectrodomesticoCategoria = async (req, res) => {
         return res.json({
             success: true,
             message: 'Categoría de electrodomésticos eliminada correctamente',
-            data: categoria
+            data: {
+                ...categoria.toObject(),
+                modulo: 'electrodomesticos'
+            }
         });
     } catch (error) {
         console.error('Error eliminando categoría de electrodomésticos:', error);

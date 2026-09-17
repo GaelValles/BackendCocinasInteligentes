@@ -160,7 +160,18 @@ export const crearElectrodomestico = async (req, res) => {
             });
         }
 
-        const categoriaLookup = categoriaId ? await ElectrodomesticoCategoria.findById(categoriaId).lean() : null;
+        const categoriaLookup = categoriaId
+            ? await ElectrodomesticoCategoria.findById(categoriaId).lean()
+            : null;
+
+        if (categoriaId && !categoriaLookup) {
+            return res.status(400).json({
+                success: false,
+                message: 'La categoriaId no pertenece a una categoría de electrodomésticos válida',
+                errors: [{ field: 'categoriaId', message: 'Categoría de electrodomésticos no encontrada' }]
+            });
+        }
+
         const categoriaNombre = categoriaLookup?.nombre || categoria;
 
         const nuevoElectrodomestico = new Electrodomestico({

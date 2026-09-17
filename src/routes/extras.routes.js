@@ -39,27 +39,18 @@ const upload = multer({
     fileFilter
 });
 
-// ========== CATEGORÍAS DE EXTRAS ==========
-
-// Public routes
 router.get('/categorias', listarExtrasCategorias);
 
-// Protected routes
 router.post('/categorias', authRequired, crearExtraCategoria);
 router.patch('/categorias/:id', authRequired, actualizarExtraCategoria);
 router.delete('/categorias/:id', authRequired, eliminarExtraCategoria);
 
-// ========== EXTRAS ==========
-
-// Public routes
 router.get('/', listarExtras);
 
-// Protected routes
 router.post('/', authRequired, crearExtra);
 router.patch('/:id', authRequired, actualizarExtra);
 router.delete('/:id', authRequired, eliminarExtra);
 
-// Upload image to Cloudinary
 router.post('/upload/imagen', authRequired, upload.single('file'), uploadImagenCloudinary);
 
 export default router;
