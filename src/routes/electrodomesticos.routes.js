@@ -9,7 +9,12 @@ import {
     eliminarElectrodomestico,
     uploadImagenCloudinary
 } from '../controllers/electrodomesticos.controller.js';
-import { listarElectrodomesticosCategorias } from '../controllers/electrodomesticosCategoria.controller.js';
+import {
+    listarElectrodomesticosCategorias,
+    crearElectrodomesticoCategoria,
+    actualizarElectrodomesticoCategoria,
+    eliminarElectrodomesticoCategoria
+} from '../controllers/electrodomesticosCategoria.controller.js';
 
 const router = Router();
 
@@ -36,6 +41,12 @@ const upload = multer({
 
 // Public routes (no authentication required)
 router.get('/categorias', listarElectrodomesticosCategorias);
+
+// Protected category management routes
+router.post('/categorias', authRequired, crearElectrodomesticoCategoria);
+router.patch('/categorias/:id', authRequired, actualizarElectrodomesticoCategoria);
+router.delete('/categorias/:id', authRequired, eliminarElectrodomesticoCategoria);
+
 router.get('/', listarElectrodomesticos);
 
 // Protected routes (authentication required)
