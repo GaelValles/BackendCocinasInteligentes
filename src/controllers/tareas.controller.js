@@ -86,6 +86,11 @@ const normalizeProcessFileType = (value = '') => {
     return PROCESS_FILE_TYPE_ALIASES[normalized] || normalized || 'otro';
 };
 
+const normalizeClienteCodigo = (value = '') => {
+    const codigo = String(value || '').trim().toUpperCase();
+    return codigo.replace(/^K-/, '');
+};
+
 const resolveStrictProviderByType = (tipo = '') => {
     const canonicalType = normalizeProcessFileType(tipo);
     if (DROPBOX_ONLY_TYPES.has(canonicalType)) return 'dropbox';
@@ -125,7 +130,7 @@ const toTaskFileRecord = (archivo = {}, clienteIdFallback = '') => ({
     key: String(archivo.key || ''),
     provider: inferProviderFromFileMeta(archivo),
     mimeType: String(archivo.mimeType || ''),
-    clienteId: String(archivo.clienteId || clienteIdFallback || '').trim().toUpperCase(),
+    clienteId: normalizeClienteCodigo(archivo.clienteId || clienteIdFallback),
     createdAt: toDateOrNow(archivo.createdAt)
 });
 
@@ -232,7 +237,7 @@ const upsertClienteFiles = (currentFiles = [], incomingFiles = [], context = {})
 const syncFilesWithClienteAndProject = async ({ tarea, archivosNormalizados }) => {
     const tareaId = String(tarea?._id || '');
     const proyectoId = String(tarea?.proyectoId || '');
-    const clienteCodigo = String(tarea?.clienteId || '').trim().toUpperCase();
+    const clienteCodigo = normalizeClienteCodigo(tarea?.clienteId);
 
     if (clienteCodigo) {
         const cliente = await ClienteIdentidad.findOne({ codigo: clienteCodigo });
@@ -772,7 +777,7 @@ const mapTask = (tarea, baseUrl = '') => {
         || (tarea.sourceCitaId ? 'cita' : null)
         || (tarea.sourceDisenoId ? 'diseno' : null);
     const sourceId = tarea.sourceId || tarea.sourceCitaId || tarea.sourceDisenoId || null;
-    const clienteIdResolved = String(tarea.clienteId || '').trim().toUpperCase();
+    const clienteIdResolved = normalizeClienteCodigo(tarea.clienteId);
     const citaData = sourceType === 'cita'
         ? {
             fechaAgendada: tarea.cita?.fechaAgendada || null,
