@@ -369,10 +369,17 @@ const buildProjectSnapshot = async (access) => {
         const { totalPagado } = calculatePagosSummary(pagos);
         const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
+        const kanbanStage = tarea.etapa || '';
+        const kanbanFollowUpStatus = tarea.followUpStatus || 'pendiente';
+
         return {
             codigo: codigoClienteIdentidad,
             cliente: clienteNombre,
+            nombre: clienteNombre,
+            titulo: tarea.nombreProyecto || 'Proyecto de cocina',
             isProspect: true,
+            kanbanStage,
+            kanbanFollowUpStatus,
             inversion,
             inversionTotal: inversion,
             fechaInicio: formatDateSimple(tarea.createdAt),
@@ -389,6 +396,10 @@ const buildProjectSnapshot = async (access) => {
             archivos: mergeTrackingFiles(tarea.archivos, clientReceipts),
             cotizacionPreliminarImage: '',
             cotizacionFormalImage: '',
+            cotizacionesFormales: [],
+            cotizacionFormalData: [],
+            preliminarCotizaciones: [],
+            preliminarData: [],
             projectId: tarea.proyectoId || null,
             taskId: String(tarea._id)
         };
@@ -420,10 +431,19 @@ const buildProjectSnapshot = async (access) => {
     const { totalPagado } = calculatePagosSummary(pagos);
     const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
+    const kanbanStage = ultimaTarea?.etapa || '';
+    const kanbanFollowUpStatus = ultimaTarea?.followUpStatus || 'pendiente';
+    const isProspect = !(kanbanFollowUpStatus === 'confirmado'
+        || (kanbanStage === 'contrato' && kanbanFollowUpStatus !== 'inactivo'));
+
     return {
         codigo: codigoClienteIdentidad,
         cliente: proyecto.nombreCliente || proyecto.cliente?.nombre || 'Cliente',
-        isProspect: false,
+        nombre: proyecto.nombreCliente || proyecto.cliente?.nombre || 'Cliente',
+        titulo: proyecto.nombre || 'Proyecto de cocina',
+        isProspect,
+        kanbanStage,
+        kanbanFollowUpStatus,
         inversion,
         inversionTotal: inversion,
         fechaInicio: formatDateSimple(proyecto.createdAt),
@@ -440,6 +460,10 @@ const buildProjectSnapshot = async (access) => {
         archivos,
         cotizacionPreliminarImage,
         cotizacionFormalImage,
+        cotizacionesFormales: [],
+        cotizacionFormalData: [],
+        preliminarCotizaciones: [],
+        preliminarData: [],
         projectId: String(proyecto._id)
     };
 };
@@ -649,6 +673,72 @@ export const getPagosSeguimiento = async (req, res) => {
 
 export const logoutSeguimiento = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Sesion de seguimiento finalizada' });
+};
+
+export const actualizarEstatusPublico = async (req, res) => {
+    try {
+        const rol = String(req.admin?.rol || '').toLowerCase();
+        if (!['admin', 'arquitecto', 'empleado', 'empleado_general', 'ingeniero', 'staff'].includes(rol)) {
+            return res.status(403).json({ success: false, message: 'No autorizado para actualizar el estatus público' });
+        }
+
+        const codigo6 = normalizeCodigoInput(req.params.codigo);
+        if (codigo6.length !== 6) {
+            return res.status(400).json({ success: false, message: 'Código de cliente inválido' });
+        }
+
+        const access = await findEnabledAccessByCodigo6(codigo6);
+        const projectId = access?.projectId && mongoose.Types.ObjectId.isValid(String(access.projectId))
+            ? String(access.projectId)
+            : null;
+        let proyecto = projectId ? await Proyecto.findById(projectId) : await Proyecto.findOne({ clienteId: codigo6 }).sort({ updatedAt: -1 });
+        if (!proyecto) {
+            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+        }
+
+        const { estadoProyecto, etapaActual, fechaInicio, fechaEntrega, garantiaInicio, inversion, pagos, seguimientoNota } = req.body || {};
+        const allowedProjectStates = ['cotizacion', 'aprobado', 'en_produccion', 'instalando', 'completado'];
+        if (estadoProyecto !== undefined) {
+            const stateMap = {
+                'cliente confirmado': 'aprobado',
+                'cotización': 'cotizacion',
+                'cotizacion': 'cotizacion',
+                'en producción': 'en_produccion',
+                'en_produccion': 'en_produccion',
+                'instalación': 'instalando',
+                'instalando': 'instalando',
+                'completado': 'completado'
+            };
+            const normalizedState = String(estadoProyecto).trim().toLowerCase();
+            proyecto.estado = stateMap[normalizedState] || (allowedProjectStates.includes(normalizedState) ? normalizedState : proyecto.estado);
+        }
+        if (etapaActual !== undefined) proyecto.timelineActual = String(etapaActual || '').trim();
+        if (inversion !== undefined && Number.isFinite(Number(inversion))) proyecto.presupuestoTotal = Number(inversion);
+        if (pagos && typeof pagos === 'object') {
+            for (const slot of ['anticipo', 'segundoPago', 'liquidacion']) {
+                if (pagos[slot] !== undefined) proyecto.pagos[slot] = pagos[slot];
+            }
+        }
+        if (seguimientoNota !== undefined) proyecto.seguimientoNota = String(seguimientoNota || '').trim();
+        await proyecto.save();
+
+        const tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+        if (tarea) {
+            if (etapaActual !== undefined) tarea.etapaActual = String(etapaActual || '').trim();
+            if (seguimientoNota !== undefined) tarea.seguimientoNota = String(seguimientoNota || '').trim();
+            if (estadoProyecto !== undefined && String(estadoProyecto).trim().toLowerCase() === 'cliente confirmado') {
+                tarea.followUpStatus = 'confirmado';
+            }
+            await tarea.save();
+        }
+
+        const refreshedAccess = access || await findEnabledAccessByCodigo6(codigo6);
+        const project = refreshedAccess ? await buildProjectSnapshot(refreshedAccess) : null;
+        return res.json({ success: true, message: 'Estatus público actualizado', data: { project } });
+    } catch (error) {
+        console.error('Error actualizando estatus público:', error);
+        return res.status(500).json({ success: false, message: 'Error al actualizar estatus público' });
+    }
 };
 
 /**

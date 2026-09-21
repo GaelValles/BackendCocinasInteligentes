@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { validateSchema } from '../middlewares/validator.middleware.js';
 import { trackingAuthRequired } from '../middlewares/trackingToken.middleware.js';
+import { authRequired } from '../middlewares/validateToken.js';
 import { loginSeguimientoSchema } from '../schemas/seguimiento.schema.js';
 import {
     loginSeguimiento,
@@ -8,6 +9,7 @@ import {
     getArchivosSeguimiento,
     getPagosSeguimiento,
     logoutSeguimiento,
+    actualizarEstatusPublico,
     debugProyectos,
     debugTrackingAccess,
     debugValidateCodigo
@@ -25,6 +27,9 @@ router.get('/proyecto', trackingAuthRequired, getProyectoSeguimiento);
 router.get('/archivos', trackingAuthRequired, getArchivosSeguimiento);
 router.get('/pagos', trackingAuthRequired, getPagosSeguimiento);
 router.post('/logout', trackingAuthRequired, logoutSeguimiento);
+
+// Actualización administrativa del estatus que ve el portal público.
+router.patch('/proyectos/:codigo', authRequired, actualizarEstatusPublico);
 
 // === DEBUG endpoints (solo desarrollo) ===
 router.get('/debug/proyectos', debugProyectos);
