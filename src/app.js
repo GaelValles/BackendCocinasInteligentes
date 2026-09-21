@@ -7,6 +7,7 @@ import responseWrapper from './middlewares/responseWrapper.js';
 import authRoutes from './routes/auth.routes.js';
 import contactoRoutes from './routes/contacto.routes.js';
 import citasRoutes from './routes/citas.routes.js';
+import visitasRoutes from './routes/visitas.routes.js';
 import diasRoutes from './routes/dias.routes.js';
 import cotizacionesRoutes from './routes/cotizaciones.routes.js';
 import levantamientosRoutes from './routes/levantamientos.routes.js';
@@ -140,6 +141,7 @@ const healthResponse = (req, res) => {
             electrodomesticos: '/api/electrodomesticos',
             extras: '/api/extras',
             citas: '/api/citas',
+            visitas: '/api/visitas',
             contacto: '/api/contacto',
             disenos: '/api/disenos',
             ordenes: '/api/ordenes',
@@ -177,6 +179,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api', authRoutes);
 app.use('/api/contacto', contactoRoutes);
 app.use('/api/citas', citasRoutes);
+app.use('/api/visitas', visitasRoutes);
 app.use('/api/dias', diasRoutes);
 app.use('/api/cotizaciones', cotizacionesRoutes);
 app.use('/api/levantamientos', levantamientosRoutes);
