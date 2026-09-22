@@ -63,6 +63,7 @@ const tareaSchema = new mongoose.Schema({
   citaFinished: { type: Boolean, default: false },
   designApprovedByAdmin: { type: Boolean, default: false },
   designApprovedByClient: { type: Boolean, default: false },
+  designFeedback: { type: String, default: '' },
   wallSpecs: [{ type: mongoose.Schema.Types.Mixed, default: {} }],
   wallCostEstimate: { type: Number, default: null },
   sourceType: { type: String, enum: ['cita', 'diseno'], default: undefined },

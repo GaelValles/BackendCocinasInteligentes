@@ -848,6 +848,7 @@ const mapTask = (tarea, baseUrl = '') => {
     citaFinished: Boolean(tarea.citaFinished),
     designApprovedByAdmin: Boolean(tarea.designApprovedByAdmin),
     designApprovedByClient: Boolean(tarea.designApprovedByClient),
+    designFeedback: String(tarea.designFeedback || ''),
     wallSpecs: Array.isArray(tarea.wallSpecs) ? tarea.wallSpecs : [],
     wallCostEstimate: tarea.wallCostEstimate ?? null,
     visita: visitaData,
@@ -1281,6 +1282,7 @@ export const actualizarTarea = async (req, res) => {
             citaFinished,
             designApprovedByAdmin,
             designApprovedByClient,
+            designFeedback,
             sourceType,
             sourceId,
             sourceCitaId,
@@ -1330,6 +1332,7 @@ export const actualizarTarea = async (req, res) => {
             citaFinished,
             designApprovedByAdmin,
             designApprovedByClient,
+            designFeedback,
             sourceType,
             sourceId,
             sourceCitaId,
@@ -1497,6 +1500,7 @@ export const actualizarTarea = async (req, res) => {
         if (etapaNormalizada !== undefined) tarea.etapa = etapaNormalizada;
         if (estadoNormalizado !== undefined) tarea.estado = estadoNormalizado;
         if (notas !== undefined) tarea.notas = String(notas || '');
+        if (designFeedback !== undefined) tarea.designFeedback = String(designFeedback || '');
         if (prioridad !== undefined) tarea.prioridad = prioridad;
         if (normalizedFollowUpStatus !== undefined) tarea.followUpStatus = normalizedFollowUpStatus;
         if (followUpEnteredAt !== undefined) tarea.followUpEnteredAt = followUpEnteredAt;

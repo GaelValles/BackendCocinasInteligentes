@@ -92,6 +92,7 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
     citaFinished: Boolean(item.citaFinished),
     designApprovedByAdmin: Boolean(item.designApprovedByAdmin),
     designApprovedByClient: Boolean(item.designApprovedByClient),
+    designFeedback: String(item.designFeedback || ''),
     wallSpecs: Array.isArray(item.wallSpecs) ? item.wallSpecs : [],
     wallCostEstimate: item.wallCostEstimate ?? null,
     visita: {
