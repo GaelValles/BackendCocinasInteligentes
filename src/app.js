@@ -115,7 +115,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'x-public-tracking', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'cf-turnstile-response', 'turnstile-response', 'x-public-tracking', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
     exposedHeaders: ['Content-Length', 'X-Ku%C3%BCche-Trace']
 }));
 app.use(express.json());
