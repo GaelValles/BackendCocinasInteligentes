@@ -23,6 +23,22 @@ const getEnvValue = (keys) => {
   return '';
 };
 
+// Enmascara un valor sensible dejando ver solo longitud y extremos, sin exponerlo completo
+const maskSecret = (value) => {
+  if (!value) return '(vacío)';
+  const trimmed = String(value).trim();
+  if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}***(len:${trimmed.length})`;
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)} (len:${trimmed.length})`;
+};
+
+const TEST_VALUE_PATTERNS = ['test', 'sandbox', 'xxxx', 'changeme', 'placeholder', '1x0000000000000000000000000000000aa', '1x00000000000000000000ab'];
+
+const looksLikeTestValue = (value) => {
+  if (!value) return false;
+  const lower = String(value).trim().toLowerCase();
+  return TEST_VALUE_PATTERNS.some((pattern) => lower.includes(pattern));
+};
+
 const detectCaptchaProvider = () => {
   const provider = getEnvValue(PROVIDER_KEYS).toLowerCase();
   if (provider === 'turnstile') return 'turnstile';
@@ -37,6 +53,16 @@ export const isRecaptchaConfigured = () => {
   const apiKey = getEnvValue(API_KEY_KEYS);
   return Boolean(projectId && apiKey);
 };
+
+// Extrae el token de captcha sin importar cómo lo mande el frontend (header o body)
+export const extractCaptchaToken = (req) => req.headers['captcha-token']
+  || req.headers['captchatoken']
+  || req.headers['x-captcha-token']
+  || req.headers['cf-turnstile-response']
+  || req.headers['turnstile-response']
+  || req.body?.captchaToken
+  || req.body?.token
+  || req.body?.['cf-turnstile-response'];
 
 export const verifyRecaptchaToken = async (token, options = {}) => {
   if (!token || typeof token !== 'string') {
@@ -68,6 +94,9 @@ export const verifyRecaptchaToken = async (token, options = {}) => {
       };
     }
 
+    console.log('[Turnstile] Token recibido:', token ? maskSecret(token) : '(vacío)', looksLikeTestValue(token) ? '(⚠️ parece un valor de prueba)' : '');
+    console.log('[Turnstile] Secret key configurada:', secretKey ? maskSecret(secretKey) : '(vacía)', looksLikeTestValue(secretKey) ? '(⚠️ parece un valor de prueba)' : '');
+
     const form = new URLSearchParams();
     form.append('secret', secretKey);
     form.append('response', token);
@@ -80,6 +109,8 @@ export const verifyRecaptchaToken = async (token, options = {}) => {
     });
 
     const data = await response.json().catch(() => ({}));
+
+    console.log('[Turnstile] Respuesta de Cloudflare:', { httpOk: response.ok, success: data?.success, errorCodes: data['error-codes'] });
 
     if (!response.ok) {
       return {

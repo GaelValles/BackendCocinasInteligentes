@@ -1,6 +1,6 @@
 import Contacto from '../models/contacto.model.js';
 import nodemailer from 'nodemailer';
-import { verifyRecaptchaToken } from '../services/recaptcha.service.js';
+import { verifyRecaptchaToken, extractCaptchaToken } from '../services/recaptcha.service.js';
 
 // PASO 1: Configurar el transportador de correo (se reutiliza en cada envío)
 const crearTransportador = () => {
@@ -20,14 +20,7 @@ export const crearContacto = async (req, res) => {
     try {
         // PASO 2.1: Validar datos recibidos
         const { nombre, telefono, correo, mensaje } = req.body;
-        const captchaHeader = req.headers['captcha-token']
-            || req.headers['captchatoken']
-            || req.headers['x-captcha-token']
-            || req.headers['cf-turnstile-response']
-            || req.headers['turnstile-response']
-            || req.body?.captchaToken
-            || req.body?.token
-            || req.body?.['cf-turnstile-response'];
+        const captchaHeader = extractCaptchaToken(req);
 
         if (!captchaHeader) {
             return res.status(400).json({ message: 'El captcha (captcha-token o cf-turnstile-response) es requerido' });

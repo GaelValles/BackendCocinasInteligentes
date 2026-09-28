@@ -37,7 +37,6 @@ router.get('/disponibilidad', obtenerDisponibilidad);
 router.get('/horarios-ocupados', obtenerHorariosOcupados);
 
 // Alias público para compatibilidad con integraciones previas del frontend
-router.get('', obtenerCitasPublicasCompat);
 router.get('/', obtenerCitasPublicasCompat);
 router.get('/all', obtenerCitasPublicasCompat);
 router.get('/getAll', obtenerCitasPublicasCompat);
@@ -52,7 +51,7 @@ router.put('/actualizarCita/:id', authRequired, actualizarCita);
 router.delete('/eliminarCita/:id', authRequired, eliminarCita);
 
 // Ruta para ver citas del usuario autenticado (usado en "Ver citas" del diagrama)
-router.get('/verCitas', obtenerCitas);
+router.get('/verCitas', authRequired, obtenerCitas);
 
 // Ruta para ver una cita específica
 router.get('/verCita/:id', authRequired, obtenerCita);

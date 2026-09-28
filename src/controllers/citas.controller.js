@@ -6,7 +6,7 @@ import OrdenTrabajo from "../models/ordenTrabajo.model.js";
 import Notificaciones from "../models/notificaciones.model.js";
 import Tarea from '../models/tarea.model.js';
 import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
-import { verifyRecaptchaToken } from '../services/recaptcha.service.js';
+import { verifyRecaptchaToken, extractCaptchaToken } from '../services/recaptcha.service.js';
 
 const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'empleado_general', 'staff'];
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
@@ -131,16 +131,10 @@ export const crearCita = async (req, res) => {
     } = req.body;
 
         // Verificar token de captcha en headers o body (frontend puede enviarlo de varias formas)
-        const captchaHeader = req.headers['captcha-token']
-            || req.headers['captchatoken']
-            || req.headers['x-captcha-token']
-            || req.headers['cf-turnstile-response']
-            || req.headers['turnstile-response']
-            || req.body?.captchaToken
-            || req.body?.token
-            || req.body?.['cf-turnstile-response'];
+        const captchaHeader = extractCaptchaToken(req);
 
         if (!captchaHeader) {
+            console.warn('[crearCita] Rechazada: falta captcha token');
             return res.status(400).json({ success: false, message: "El captcha (captcha-token o cf-turnstile-response) es requerido" });
         }
 
@@ -149,6 +143,7 @@ export const crearCita = async (req, res) => {
         });
 
         if (!captchaResult.success) {
+            console.warn('[crearCita] Captcha rechazado:', JSON.stringify(captchaResult));
             return res.status(400).json({
                 success: false,
                 message: 'La verificación del captcha falló',
@@ -233,6 +228,7 @@ export const crearCita = async (req, res) => {
                 return `${horas}:${minutos}`;
             });
 
+            console.warn('[crearCita] Rechazada por conflicto de horario:', horasCita);
             return res.status(400).json({ 
                 success: false,
                 message: "Ya existe una cita programada en ese horario. Debe haber al menos 1 hora de separación entre citas.",
@@ -266,6 +262,7 @@ export const crearCita = async (req, res) => {
         .populate('diseno', 'nombre descripcion imagenes');
     }
 
+        console.log('[crearCita] Cita guardada correctamente:', String(citaGuardada._id));
         await syncTaskFromCita(citaGuardada, req, 'create_cita');
 
         return res.status(201).json({

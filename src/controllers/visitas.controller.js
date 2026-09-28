@@ -1,5 +1,5 @@
 import Visita from '../models/visita.model.js';
-import { verifyRecaptchaToken } from '../services/recaptcha.service.js';
+import { verifyRecaptchaToken, extractCaptchaToken } from '../services/recaptcha.service.js';
 
 const ACTIVE_STATES = ['solicitada', 'programada', 'confirmada'];
 const VALID_STATES = ['solicitada', 'programada', 'confirmada', 'cancelada'];
@@ -22,13 +22,6 @@ const getDayRange = (value) => {
 const formatSlot = (date) => date.toISOString().slice(11, 16);
 
 const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
-
-const getCaptchaToken = (req) => req.headers['captcha-token']
-    || req.headers['captchatoken']
-    || req.headers['x-captcha-token']
-    || req.headers['cf-turnstile-response']
-    || req.body?.captchaToken
-    || req.body?.['cf-turnstile-response'];
 
 const canManageVisits = (req) => ['admin', 'arquitecto', 'empleado', 'empleado_general', 'ingeniero', 'staff']
     .includes(String(req.admin?.rol || '').toLowerCase());
@@ -103,7 +96,7 @@ export const obtenerDisponibilidadVisita = async (req, res) => {
 
 export const crearVisita = async (req, res) => {
     try {
-        const captchaToken = getCaptchaToken(req);
+        const captchaToken = extractCaptchaToken(req);
         if (!captchaToken) {
             return res.status(400).json({ success: false, message: 'El captcha (captcha-token) es requerido' });
         }
