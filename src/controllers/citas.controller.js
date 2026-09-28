@@ -121,7 +121,6 @@ const removeTaskFromCita = async (citaId) => {
 export const crearCita = async (req, res) => {
   try {
     const {
-      fechaAgendada,
       nombreCliente,
       correoCliente,
       telefonoCliente,
@@ -129,6 +128,14 @@ export const crearCita = async (req, res) => {
       diseno,
       informacionAdicional
     } = req.body;
+    // Acepta fechaProgramada como alias por si el formulario reutiliza el nombre de campo de visitas
+    const fechaAgendada = req.body?.fechaAgendada !== undefined ? req.body.fechaAgendada : req.body?.fechaProgramada;
+
+    console.log('[crearCita] Payload recibido:', {
+      fechaAgendada: req.body?.fechaAgendada,
+      fechaProgramada: req.body?.fechaProgramada,
+      nombreCliente
+    });
 
         // Verificar token de captcha en headers o body (frontend puede enviarlo de varias formas)
         const captchaHeader = extractCaptchaToken(req);
@@ -747,7 +754,11 @@ export const obtenerCitasPorCliente = async (req, res) => {
 export const actualizarCita = async (req, res) => {
     try {
         const { id } = req.params;
-    const { fechaAgendada, fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, mapsUrl, informacionAdicional, estado, estadoCita, diseno, ingenieroAsignado } = req.body;
+    const { fechaInicio, fechaTermino, nombreCliente, correoCliente, telefonoCliente, ubicacion, mapsUrl, informacionAdicional, estado, estadoCita, diseno, ingenieroAsignado } = req.body;
+    // Acepta fechaProgramada como alias por si el formulario reutiliza el nombre de campo de visitas
+    const fechaAgendada = req.body?.fechaAgendada !== undefined ? req.body.fechaAgendada : req.body?.fechaProgramada;
+
+    console.log('[actualizarCita] Payload recibido para', id, ':', req.body);
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ success: false, message: 'ID de cita inválido' });

@@ -26,9 +26,15 @@ const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value |
 const canManageVisits = (req) => ['admin', 'arquitecto', 'empleado', 'empleado_general', 'ingeniero', 'staff']
     .includes(String(req.admin?.rol || '').toLowerCase());
 
+// Acepta fechaAgendada como alias por si el formulario reutiliza el nombre de campo de citas
+const getFechaProgramadaInput = (body = {}) => (
+    body.fechaProgramada !== undefined ? body.fechaProgramada : body.fechaAgendada
+);
+
 const buildVisitUpdate = (body = {}) => {
     const update = {};
-    if (body.fechaProgramada !== undefined) update.fechaProgramada = parseDate(body.fechaProgramada);
+    const fechaInput = getFechaProgramadaInput(body);
+    if (fechaInput !== undefined) update.fechaProgramada = parseDate(fechaInput);
     if (body.nombreCliente !== undefined) update.nombreCliente = String(body.nombreCliente).trim();
     if (body.correoCliente !== undefined) update.correoCliente = String(body.correoCliente).trim().toLowerCase();
     if (body.telefonoCliente !== undefined) update.telefonoCliente = String(body.telefonoCliente).trim();
@@ -113,7 +119,6 @@ export const crearVisita = async (req, res) => {
         }
 
         const {
-            fechaProgramada,
             nombreCliente,
             correoCliente,
             telefonoCliente,
@@ -121,7 +126,14 @@ export const crearVisita = async (req, res) => {
             informacionAdicional,
             estado
         } = req.body || {};
-        const fecha = parseDate(fechaProgramada);
+        const fecha = parseDate(getFechaProgramadaInput(req.body));
+
+        console.log('[crearVisita] Payload recibido:', {
+            fechaProgramada: req.body?.fechaProgramada,
+            fechaAgendada: req.body?.fechaAgendada,
+            nombreCliente,
+            estado
+        });
 
         if (!fecha || !nombreCliente || !correoCliente || !telefonoCliente) {
             return res.status(400).json({
@@ -173,8 +185,11 @@ export const actualizarVisita = async (req, res) => {
         const visita = await Visita.findById(req.params.id);
         if (!visita) return res.status(404).json({ success: false, message: 'Visita no encontrada' });
 
+        console.log('[actualizarVisita] Payload recibido para', req.params.id, ':', req.body);
+
         const update = buildVisitUpdate(req.body);
-        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'fechaProgramada') && !update.fechaProgramada) {
+        const fechaInput = getFechaProgramadaInput(req.body);
+        if (fechaInput !== undefined && !update.fechaProgramada) {
             return res.status(400).json({ success: false, message: 'fechaProgramada inválida' });
         }
         if (update.correoCliente !== undefined && !isValidEmail(update.correoCliente)) {
