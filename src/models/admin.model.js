@@ -1,6 +1,9 @@
 import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
 //siuuuuuuuuuuuuu
+//SIUUUUUUUUUUUUUU
+//SIUUUUUUUUUUUUUU
+//SIUUUUUUUUUUUUUU
 const usersSchema = new mongoose.Schema({
     nombre:{
         type: String,
