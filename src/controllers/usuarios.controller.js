@@ -220,3 +220,115 @@ export const obtenerPorId = async (req, res) => {
         });
     }
 };
+
+/**
+ * Actualizar integrante/usuario
+ * PUT /api/usuarios/:id
+ */
+export const actualizar = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { nombre, name, correo, email, telefono, phone, rol, role } = req.body || {};
+
+        const updateData = {};
+        const finalNombre = (nombre || name || '').trim();
+        const finalCorreo = (correo || email || '').trim().toLowerCase();
+        const finalTelefono = (telefono || phone || '').trim();
+        const finalRol = rol || role;
+
+        if (finalNombre) updateData.nombre = finalNombre;
+        if (finalCorreo) {
+            if (!isEmailValid(finalCorreo)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'correo invalido'
+                });
+            }
+            updateData.correo = finalCorreo;
+        }
+        if (finalTelefono) updateData.telefono = finalTelefono;
+        if (finalRol) {
+            const rolNormalized = String(finalRol).trim().toLowerCase();
+            if (!ROLES_ASIGNABLES.includes(rolNormalized)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `rol invalido. Valores permitidos: ${ROLES_ASIGNABLES.join(', ')}`
+                });
+            }
+            updateData.rol = rolNormalized;
+        }
+
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Debe proporcionar al menos un campo para actualizar'
+            });
+        }
+
+        if (finalCorreo) {
+            const existing = await Admin.findOne({ correo: finalCorreo, _id: { $ne: id } }).select('_id');
+            if (existing) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'El correo ya está en uso por otro usuario'
+                });
+            }
+        }
+
+        const userUpdated = await Admin.findByIdAndUpdate(
+            id,
+            { $set: updateData },
+            { new: true, runValidators: true }
+        ).select('-password');
+
+        if (!userUpdated) {
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Usuario actualizado correctamente',
+            data: {
+                _id: userUpdated._id,
+                id: userUpdated._id,
+                nombre: userUpdated.nombre,
+                correo: userUpdated.correo,
+                telefono: userUpdated.telefono,
+                rol: userUpdated.rol,
+                activo: userUpdated.status !== false,
+                createdAt: userUpdated.createdAt,
+                updatedAt: userUpdated.updatedAt
+            }
+        });
+    } catch (error) {
+        if (error?.code === 11000) {
+            return res.status(400).json({
+                success: false,
+                message: 'El correo ya está en uso por otro usuario'
+            });
+        }
+
+        console.error('Error al actualizar usuario:', error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Desactivar integrante/usuario (baja lógica)
+ * DELETE /api/usuarios/:id
+ */
+export const eliminar = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const user = await Admin.findByIdAndUpdate(id, { status: false }, { new: true }).select('-password');
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+        }
+
+        return res.json({ success: true, message: 'Usuario desactivado correctamente' });
+    } catch (error) {
+        console.error('Error al desactivar usuario:', error);
+        return res.status(500).json({ success: false, message: error.message });
+    }
+};

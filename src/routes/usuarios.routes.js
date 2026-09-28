@@ -5,7 +5,9 @@ import {
     crear,
     listar,
     listarEmpleados,
-    obtenerPorId
+    obtenerPorId,
+    actualizar,
+    eliminar
 } from '../controllers/usuarios.controller.js';
 
 const router = Router();
@@ -23,5 +25,8 @@ router.get('/empleados', authRequired, listarEmpleados);
 
 // Obtener usuario por ID
 router.get('/:id', authRequired, obtenerPorId);
+
+router.put('/:id', authRequired, requireStaff, actualizar);
+router.delete('/:id', authRequired, requireStaff, eliminar);
 
 export default router;
