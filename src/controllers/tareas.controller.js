@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
 import Tarea from '../models/tarea.model.js';
+import Visita from '../models/visita.model.js';
 import Proyecto from '../models/proyecto.model.js';
 import ClienteIdentidad from '../models/clienteIdentidad.model.js';
 import Admin from '../models/admin.model.js';
@@ -1470,6 +1471,28 @@ export const actualizarTarea = async (req, res) => {
             designApprovedByClient,
             currentVisita: tarea.visita
         });
+
+        const clientApprovalRequested = designApprovedByClient === true
+            || (etapaNormalizada === 'cotizacion' && tarea.etapa === 'disenos');
+        if (clientApprovalRequested && !(tarea.designApprovedByClient && tarea.etapa === 'cotizacion')) {
+            if (etapaNormalizada !== 'cotizacion'
+                || estadoNormalizado !== 'pendiente'
+                || designApprovedByClient !== true
+                || citaStarted !== false
+                || citaFinished !== false) {
+                return res.status(409).json({ success: false, message: 'La aprobación debe avanzar la tarea a Cotización con el estado y los indicadores requeridos' });
+            }
+            if (tarea.etapa !== 'disenos' || !visitState.value.aprobadaPorAdmin) {
+                return res.status(409).json({ success: false, message: 'La tarea debe estar en Diseños y tener aprobación administrativa' });
+            }
+            const completedVisit = await Visita.findOne({
+                tareaId: tarea._id,
+                operationalStatus: 'completed'
+            }).select('_id').lean();
+            if (!completedVisit) {
+                return res.status(409).json({ success: false, message: 'Se requiere una visita completada antes de aprobar el diseño' });
+            }
+        }
 
         const normalizedCita = cita !== undefined ? normalizeCitaData(cita) : undefined;
         const resolvedCliente = cliente !== undefined || nombreCliente !== undefined || correoCliente !== undefined || telefonoCliente !== undefined

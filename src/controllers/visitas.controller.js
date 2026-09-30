@@ -1,4 +1,6 @@
+import mongoose from 'mongoose';
 import Visita from '../models/visita.model.js';
+import Tarea from '../models/tarea.model.js';
 import { verifyRecaptchaToken, extractCaptchaToken } from '../services/recaptcha.service.js';
 
 const ACTIVE_STATES = ['solicitada', 'programada', 'confirmada'];
@@ -102,31 +104,41 @@ export const obtenerDisponibilidadVisita = async (req, res) => {
 
 export const crearVisita = async (req, res) => {
     try {
-        const captchaToken = extractCaptchaToken(req);
-        if (!captchaToken) {
-            return res.status(400).json({ success: false, message: 'El captcha (captcha-token) es requerido' });
-        }
-
-        const captchaResult = await verifyRecaptchaToken(String(captchaToken), {
-            expectedAction: 'submit_visita'
-        });
-        if (!captchaResult.success) {
-            return res.status(403).json({
-                success: false,
-                message: 'La verificación del captcha falló',
-                error: captchaResult.error || 'Token inválido o expirado'
-            });
-        }
-
         const {
             nombreCliente,
             correoCliente,
             telefonoCliente,
             ubicacion,
             informacionAdicional,
-            estado
+            estado,
+            tareaId
         } = req.body || {};
         const fecha = parseDate(getFechaProgramadaInput(req.body));
+
+        if (!tareaId) {
+            const captchaToken = extractCaptchaToken(req);
+            if (!captchaToken) {
+                return res.status(400).json({ success: false, message: 'El captcha (captcha-token) es requerido' });
+            }
+
+            const captchaResult = await verifyRecaptchaToken(String(captchaToken), {
+                expectedAction: 'submit_visita'
+            });
+            if (!captchaResult.success) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'La verificación del captcha falló',
+                    error: captchaResult.error || 'Token inválido o expirado'
+                });
+            }
+        } else {
+            if (!canManageVisits(req)) {
+                return res.status(403).json({ success: false, message: 'No autorizado para vincular visitas a tareas' });
+            }
+            if (!mongoose.Types.ObjectId.isValid(String(tareaId))) {
+                return res.status(400).json({ success: false, message: 'tareaId inválido' });
+            }
+        }
 
         console.log('[crearVisita] Payload recibido:', {
             fechaProgramada: req.body?.fechaProgramada,
@@ -148,6 +160,17 @@ export const crearVisita = async (req, res) => {
             return res.status(400).json({ success: false, message: 'fechaProgramada debe ser futura' });
         }
 
+        if (tareaId) {
+            const tarea = await Tarea.findById(tareaId).select('etapa designApprovedByAdmin cliente cita').lean();
+            if (!tarea || tarea.etapa !== 'disenos' || !tarea.designApprovedByAdmin) {
+                return res.status(409).json({ success: false, message: 'La tarea debe existir, estar en Diseños y tener aprobación administrativa' });
+            }
+            const taskEmail = String(tarea.cliente?.correo || tarea.cita?.correoCliente || '').trim().toLowerCase();
+            if (!taskEmail || taskEmail !== String(correoCliente).trim().toLowerCase()) {
+                return res.status(409).json({ success: false, message: 'La visita debe corresponder al cliente de la tarea' });
+            }
+        }
+
         const requestedState = ['solicitada', 'programada', 'confirmada', 'cancelada'].includes(estado)
             ? estado
             : 'solicitada';
@@ -162,7 +185,9 @@ export const crearVisita = async (req, res) => {
             telefonoCliente: String(telefonoCliente).trim(),
             ubicacion: String(ubicacion || '').trim(),
             informacionAdicional: String(informacionAdicional || '').trim(),
-            estado: requestedState
+            estado: requestedState,
+            tareaId: tareaId || null,
+            operationalStatus: 'pending'
         });
 
         return res.status(201).json({
@@ -201,6 +226,9 @@ export const actualizarVisita = async (req, res) => {
 
         const nextDate = update.fechaProgramada || visita.fechaProgramada;
         const nextState = update.estado || visita.estado;
+        if (nextDate.getTime() <= Date.now()) {
+            return res.status(400).json({ success: false, message: 'fechaProgramada debe ser futura' });
+        }
         if (ACTIVE_STATES.includes(nextState) && await hasScheduleConflict({ fecha: nextDate, excludeId: visita._id })) {
             return res.status(409).json({ success: false, message: 'El horario de visita no está disponible' });
         }
@@ -211,6 +239,45 @@ export const actualizarVisita = async (req, res) => {
     } catch (error) {
         console.error('Error actualizando visita:', error);
         return res.status(500).json({ success: false, message: 'Error al actualizar visita' });
+    }
+};
+
+export const actualizarEstadoOperativoVisita = async (req, res) => {
+    try {
+        if (!canManageVisits(req)) {
+            return res.status(403).json({ success: false, message: 'No autorizado para actualizar visitas' });
+        }
+
+        const { status } = req.body || {};
+        const validStatuses = ['pending', 'in_progress', 'completed'];
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({ success: false, message: 'status inválido' });
+        }
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ success: false, message: 'ID de visita inválido' });
+        }
+
+        const visita = await Visita.findById(req.params.id);
+        if (!visita) return res.status(404).json({ success: false, message: 'Visita no encontrada' });
+        if (visita.estado === 'cancelada') {
+            return res.status(409).json({ success: false, message: 'No se puede actualizar una visita cancelada' });
+        }
+        if (visita.operationalStatus === status) {
+            return res.json({ success: true, data: visita });
+        }
+
+        const allowedTransition = (visita.operationalStatus === 'pending' && status === 'in_progress')
+            || (visita.operationalStatus === 'in_progress' && status === 'completed');
+        if (!allowedTransition) {
+            return res.status(409).json({ success: false, message: 'Transición de estado operativo no permitida' });
+        }
+
+        visita.operationalStatus = status;
+        await visita.save();
+        return res.json({ success: true, data: visita });
+    } catch (error) {
+        console.error('Error actualizando estado operativo de visita:', error);
+        return res.status(500).json({ success: false, message: 'Error al actualizar estado operativo de visita' });
     }
 };
 

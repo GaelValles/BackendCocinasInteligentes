@@ -4,7 +4,8 @@ import {
     obtenerDisponibilidadVisita,
     listarVisitas,
     actualizarVisita,
-    eliminarVisita
+    eliminarVisita,
+    actualizarEstadoOperativoVisita
 } from '../controllers/visitas.controller.js';
 import { authRequired } from '../middlewares/validateToken.js';
 
@@ -14,8 +15,12 @@ const router = Router();
 router.get('/disponibilidad', obtenerDisponibilidadVisita);
 router.get('/horarios-ocupados', obtenerDisponibilidadVisita);
 router.get('/', authRequired, listarVisitas);
-router.post('/', crearVisita);
-router.post('/agendarVisita', crearVisita);
+const authorizeLinkedVisit = (req, res, next) => (
+    req.body?.tareaId ? authRequired(req, res, next) : next()
+);
+router.post('/', authorizeLinkedVisit, crearVisita);
+router.post('/agendarVisita', authorizeLinkedVisit, crearVisita);
+router.patch('/:id/status', authRequired, actualizarEstadoOperativoVisita);
 router.patch('/:id', authRequired, actualizarVisita);
 router.delete('/:id', authRequired, eliminarVisita);
 

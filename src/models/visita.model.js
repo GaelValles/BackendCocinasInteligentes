@@ -33,6 +33,19 @@ const visitaSchema = new mongoose.Schema({
         default: '',
         trim: true
     },
+    tareaId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Tarea',
+        default: null,
+        index: true
+    },
+    operationalStatus: {
+        type: String,
+        enum: ['pending', 'in_progress', 'completed'],
+        default: 'pending',
+        required: true,
+        index: true
+    },
     estado: {
         type: String,
         enum: ['solicitada', 'programada', 'confirmada', 'cancelada'],
