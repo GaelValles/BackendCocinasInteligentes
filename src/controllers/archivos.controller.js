@@ -245,9 +245,10 @@ export const subirArchivo = async (req, res) => {
 
     // Validar cliente existe
     const cliente = await findClienteByCodeOrId(clienteId);
-    if (!cliente) {
+    if (!cliente && !req.dropboxFolder) {
       return res.status(404).json({ success: false, message: 'Cliente no encontrado' });
     }
+    const clienteCodigo = cliente?.codigo || String(req.resolvedDesignClientId || clienteId).trim().toUpperCase();
 
     // Validar tarea si viene
     if (tareasIdNormalizado && !mongoose.Types.ObjectId.isValid(tareasIdNormalizado)) {
@@ -269,7 +270,7 @@ export const subirArchivo = async (req, res) => {
 
     // Crear documento en ClienteArchivo
     clienteArchivo = await ClienteArchivo.create({
-      clienteId: cliente.codigo,
+      clienteId: clienteCodigo,
       tareasId: tareasIdNormalizado || null,
       tipo: tipoNormalizado,
       nivel: nivelNormalizado,
@@ -292,7 +293,7 @@ export const subirArchivo = async (req, res) => {
       tipo: tipoNormalizado,
       file,
       uploadResult,
-      clienteCodigo: cliente.codigo,
+      clienteCodigo,
       nivel: nivelNormalizado,
       relacionadoA,
       relacionadoId,

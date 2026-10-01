@@ -676,31 +676,52 @@ export const prepararCargaDisenoDropbox = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'clienteId es obligatorio' });
         }
 
-        let cliente = tarea.clienteRef ? await ClienteIdentidad.findById(tarea.clienteRef) : null;
-        if (!cliente && tarea.clienteId) {
-            const taskClientCode = String(tarea.clienteId).trim().toUpperCase();
-            const clientCodes = [taskClientCode, taskClientCode.startsWith('K-') ? taskClientCode.slice(2) : `K-${taskClientCode}`];
-            cliente = await ClienteIdentidad.findOne({ codigo: { $in: clientCodes } });
+        const proyecto = tarea.proyectoId && mongoose.Types.ObjectId.isValid(String(tarea.proyectoId))
+            ? await Proyecto.findById(tarea.proyectoId).select('clienteId clienteRef').lean()
+            : null;
+        let cliente = null;
+        const identityIds = [tarea.clienteRef, proyecto?.clienteRef]
+            .filter((value) => value && mongoose.Types.ObjectId.isValid(String(value)));
+        for (const identityId of identityIds) {
+            cliente = await ClienteIdentidad.findById(identityId);
+            if (cliente) break;
         }
-        if (!cliente) {
-            return res.status(409).json({ success: false, message: 'La tarea no tiene un cliente asociado válido' });
+
+        const candidateCodes = [tarea.clienteId, proyecto?.clienteId].filter(Boolean);
+        for (const candidateCode of candidateCodes) {
+            if (cliente) break;
+            const code = String(candidateCode).trim().toUpperCase();
+            const variants = [code, code.startsWith('K-') ? code.slice(2) : `K-${code}`];
+            cliente = await ClienteIdentidad.findOne({ codigo: { $in: variants } });
+            if (cliente) break;
         }
 
         const submittedClientId = String(clienteId).trim().toUpperCase();
         const taskIdFallback = String(tarea._id).toUpperCase();
-        if (submittedClientId !== taskIdFallback
-            && normalizeClienteCodigo(submittedClientId) !== normalizeClienteCodigo(cliente.codigo)) {
+        const matchingCode = [cliente?.codigo, tarea.clienteId, proyecto?.clienteId]
+            .filter(Boolean)
+            .some((code) => normalizeClienteCodigo(code) === normalizeClienteCodigo(submittedClientId));
+        if (submittedClientId !== taskIdFallback && !matchingCode) {
             return res.status(400).json({ success: false, message: 'clienteId no corresponde al cliente de la tarea' });
         }
 
+        const persistedClientId = [cliente?.codigo, tarea.clienteId, proyecto?.clienteId]
+            .filter(Boolean)
+            .find((code) => normalizeClienteCodigo(code) === normalizeClienteCodigo(submittedClientId))
+            || cliente?.codigo
+            || proyecto?.clienteId
+            || tarea.clienteId
+            || String(tarea._id);
+
         req.body = {
             ...req.body,
-            clienteId: cliente.codigo,
+            clienteId: persistedClientId,
             tareasId: String(tarea._id),
             relacionadoA: 'tarea',
             relacionadoId: String(tarea._id)
         };
-        const safeClientCode = String(cliente.codigo).replace(/[^a-zA-Z0-9_-]/g, '_');
+        req.resolvedDesignClientId = persistedClientId;
+        const safeClientCode = String(persistedClientId).replace(/[^a-zA-Z0-9_-]/g, '_');
         req.dropboxFolder = `${safeClientCode}/disenos/${tarea._id}/${nivel}`;
         return next();
     } catch (error) {
