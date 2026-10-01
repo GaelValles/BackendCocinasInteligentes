@@ -78,12 +78,13 @@ const getProviderForType = (tipo) => {
 
 const RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
 
-const toStoredFileRecord = ({ tipo, file, uploadResult, clienteCodigo, relacionadoA, relacionadoId, tareasId }) => {
+const toStoredFileRecord = ({ tipo, nivel, file, uploadResult, clienteCodigo, relacionadoA, relacionadoId, tareasId }) => {
   const linkedTaskId = tareasId || (String(relacionadoA || '').toLowerCase() === 'tarea' ? relacionadoId : null);
   return {
     id: String(Date.now()) + Math.random().toString(36).slice(2, 8),
     nombre: file.originalname,
     tipo,
+    nivel,
     url: uploadResult.url,
     key: uploadResult.key,
     provider: uploadResult.provider || 'cloudinary',
@@ -129,6 +130,7 @@ const appendArchivoToRelatedEntities = async (stored) => {
     id: stored.id,
     nombre: stored.nombre,
     tipo: stored.tipo,
+    nivel: stored.nivel,
     url: stored.url,
     key: stored.key,
     provider: stored.provider,
@@ -203,6 +205,8 @@ const findClienteByCodeOrId = async (value) => {
  * Subir archivo único
  */
 export const subirArchivo = async (req, res) => {
+  let uploadResult = null;
+  let clienteArchivo = null;
   try {
     const file = req.file || (Array.isArray(req.files) ? req.files[0] : null);
     if (!file) {
@@ -252,11 +256,9 @@ export const subirArchivo = async (req, res) => {
 
     // Subir a provider
     const provider = getProviderForType(tipoNormalizado);
-    let uploadResult;
-
     try {
       if (provider === 'dropbox') {
-        uploadResult = await uploadFileToDropbox(file.buffer, file.originalname, 'archivos-cliente');
+        uploadResult = await uploadFileToDropbox(file.buffer, file.originalname, req.dropboxFolder || 'archivos-cliente');
       } else {
         uploadResult = await uploadFileToCloudinary(file.buffer, file.originalname, file.mimetype, 'archivos-cliente');
       }
@@ -266,7 +268,7 @@ export const subirArchivo = async (req, res) => {
     }
 
     // Crear documento en ClienteArchivo
-    const clienteArchivo = await ClienteArchivo.create({
+    clienteArchivo = await ClienteArchivo.create({
       clienteId: cliente.codigo,
       tareasId: tareasIdNormalizado || null,
       tipo: tipoNormalizado,
@@ -291,6 +293,7 @@ export const subirArchivo = async (req, res) => {
       file,
       uploadResult,
       clienteCodigo: cliente.codigo,
+      nivel: nivelNormalizado,
       relacionadoA,
       relacionadoId,
       tareasId: tareasIdNormalizado
@@ -299,13 +302,14 @@ export const subirArchivo = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Archivo subido exitosamente',
+      message: req.dropboxFolder ? 'Diseño almacenado en Dropbox' : 'Archivo subido exitosamente',
       data: {
         _id: clienteArchivo._id,
         nombre: clienteArchivo.nombre,
         tipo: clienteArchivo.tipo,
         nivel: clienteArchivo.nivel,
         url: clienteArchivo.url,
+        mimeType: clienteArchivo.mimeType,
         key: clienteArchivo.key,
         provider: clienteArchivo.provider,
         clienteId: clienteArchivo.clienteId,
@@ -319,6 +323,33 @@ export const subirArchivo = async (req, res) => {
 
   } catch (error) {
     console.error('Error uploading file:', error);
+    if (uploadResult?.provider === 'dropbox' && !clienteArchivo) {
+      try {
+        await deleteFileFromDropbox(uploadResult.key);
+      } catch (cleanupError) {
+        console.error('No se pudo limpiar el archivo Dropbox sin metadata:', cleanupError);
+      }
+    }
+    if (uploadResult?.provider === 'dropbox' && clienteArchivo) {
+      return res.status(500).json({
+        success: false,
+        message: 'Dropbox guardó el archivo, pero falló la sincronización de metadata; consulte los archivos de la tarea antes de reintentar',
+        recoverable: true,
+        data: {
+          _id: clienteArchivo._id,
+          tareasId: clienteArchivo.tareasId,
+          clienteId: clienteArchivo.clienteId,
+          tipo: clienteArchivo.tipo,
+          nivel: clienteArchivo.nivel,
+          nombre: clienteArchivo.nombre,
+          url: clienteArchivo.url,
+          key: clienteArchivo.key,
+          provider: clienteArchivo.provider,
+          mimeType: clienteArchivo.mimeType,
+          createdAt: clienteArchivo.createdAt
+        }
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Error al subir archivo',
@@ -427,6 +458,7 @@ export const subirMultiples = async (req, res) => {
           file,
           uploadResult,
           clienteCodigo: cliente.codigo,
+          nivel: nivelNormalizado,
           relacionadoA,
           relacionadoId,
           tareasId: tareasIdNormalizado

@@ -29,6 +29,7 @@ const tareaArchivoSchema = new mongoose.Schema({
   id: { type: String, default: '' },
   nombre: { type: String, default: '' },
   tipo: { type: String, default: 'otro' },
+  nivel: { type: String, enum: ['preliminar', 'final', null], default: null },
   url: { type: String, default: '' },
   key: { type: String, default: '' },
   provider: { type: String, enum: ['dropbox', 'cloudinary', 'local'], default: 'local' },

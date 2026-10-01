@@ -58,6 +58,11 @@ const clienteIdentidadSchema = new mongoose.Schema({
             type: String,
             default: 'otro'
         },
+        nivel: {
+            type: String,
+            enum: ['preliminar', 'final', null],
+            default: null
+        },
         nombre: {
             type: String,
             default: ''

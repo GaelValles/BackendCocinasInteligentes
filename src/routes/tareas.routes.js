@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import path from 'node:path';
 import { authRequired } from '../middlewares/validateToken.js';
 import { validateSchema } from '../middlewares/validator.middleware.js';
+import { upload as uploadArchivoDropbox, subirArchivo } from '../controllers/archivos.controller.js';
 import {
     obtenerTareas,
     obtenerTarea,
@@ -9,6 +11,7 @@ import {
     actualizarNotas,
     upload,
     agregarArchivos,
+    prepararCargaDisenoDropbox,
     crearTarea,
     actualizarTarea,
     asignarTrabajadoresTarea,
@@ -24,6 +27,31 @@ import {
 } from '../schemas/tareas.schema.js';
 
 const router = Router();
+const supportedDesignMimes = new Set([
+    'application/pdf',
+    'application/x-sketchup',
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'application/octet-stream'
+]);
+const supportedDesignExtensions = new Set(['.pdf', '.skp', '.jpg', '.jpeg', '.png', '.webp']);
+
+const parseDropboxFile = (req, res, next) => {
+    uploadArchivoDropbox.single('file')(req, res, (error) => {
+        if (!error && req.file) {
+            const extension = path.extname(req.file.originalname || '').toLowerCase();
+            const mimeType = String(req.file.mimetype || '').toLowerCase();
+            if (!supportedDesignExtensions.has(extension) || !supportedDesignMimes.has(mimeType)) {
+                return res.status(415).json({ success: false, message: 'Tipo de archivo de diseño no permitido' });
+            }
+        }
+        if (!error) return next();
+        const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 415;
+        return res.status(status).json({ success: false, message: error.message || 'Archivo no permitido' });
+    });
+};
 
 router.use(authRequired);
 
@@ -35,6 +63,8 @@ router.patch('/:id/etapa', validateSchema(cambiarEtapaSchema), cambiarEtapa);
 router.patch('/:id/estado', validateSchema(cambiarEstadoSchema), cambiarEstado);
 
 router.patch('/:id/notas', actualizarNotas);
+
+router.post('/:tareaId/archivos/dropbox', parseDropboxFile, prepararCargaDisenoDropbox, subirArchivo);
 
 // Soporta multipart/form-data con campo 'files' o JSON body { archivos: [...] }
 router.post('/:id/archivos', upload.array('files'), (req, res, next) => {

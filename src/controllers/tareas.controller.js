@@ -127,6 +127,9 @@ const toTaskFileRecord = (archivo = {}, clienteIdFallback = '') => ({
     id: String(archivo.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
     nombre: String(archivo.nombre || ''),
     tipo: normalizeProcessFileType(archivo.tipo || 'otro'),
+    nivel: ['preliminar', 'final'].includes(String(archivo.nivel || '').toLowerCase())
+        ? String(archivo.nivel).toLowerCase()
+        : null,
     url: String(archivo.url || ''),
     key: String(archivo.key || ''),
     provider: inferProviderFromFileMeta(archivo),
@@ -193,6 +196,7 @@ const upsertClienteFiles = (currentFiles = [], incomingFiles = [], context = {})
             taskId,
             proyectoId,
             tipo: incoming.tipo,
+            nivel: incoming.nivel,
             nombre: incoming.nombre,
             url: incoming.url,
             key: incoming.key,
@@ -645,6 +649,66 @@ const canViewOrEditTask = (req, tarea) => {
     return assigned.includes(String(req.admin._id));
 };
 
+export const prepararCargaDisenoDropbox = async (req, res, next) => {
+    try {
+        const { tareaId } = req.params;
+        const { clienteId, tipo, nivel } = req.body || {};
+
+        if (!mongoose.Types.ObjectId.isValid(tareaId)) {
+            return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
+        }
+        if (tipo !== 'diseno') {
+            return res.status(400).json({ success: false, message: 'tipo debe ser diseno' });
+        }
+        if (!['preliminar', 'final'].includes(nivel)) {
+            return res.status(400).json({ success: false, message: 'nivel debe ser preliminar o final' });
+        }
+
+        const tarea = await Tarea.findById(tareaId);
+        if (!tarea) return res.status(404).json({ success: false, message: 'Tarea no encontrada' });
+        if (!canViewOrEditTask(req, tarea)) {
+            return res.status(403).json({ success: false, message: 'No tienes permiso para agregar archivos a esta tarea' });
+        }
+        if (nivel === 'final' && req.admin?.rol !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Solo un admin puede cargar el diseño final' });
+        }
+        if (!clienteId) {
+            return res.status(400).json({ success: false, message: 'clienteId es obligatorio' });
+        }
+
+        let cliente = tarea.clienteRef ? await ClienteIdentidad.findById(tarea.clienteRef) : null;
+        if (!cliente && tarea.clienteId) {
+            const taskClientCode = String(tarea.clienteId).trim().toUpperCase();
+            const clientCodes = [taskClientCode, taskClientCode.startsWith('K-') ? taskClientCode.slice(2) : `K-${taskClientCode}`];
+            cliente = await ClienteIdentidad.findOne({ codigo: { $in: clientCodes } });
+        }
+        if (!cliente) {
+            return res.status(409).json({ success: false, message: 'La tarea no tiene un cliente asociado válido' });
+        }
+
+        const submittedClientId = String(clienteId).trim().toUpperCase();
+        const taskIdFallback = String(tarea._id).toUpperCase();
+        if (submittedClientId !== taskIdFallback
+            && normalizeClienteCodigo(submittedClientId) !== normalizeClienteCodigo(cliente.codigo)) {
+            return res.status(400).json({ success: false, message: 'clienteId no corresponde al cliente de la tarea' });
+        }
+
+        req.body = {
+            ...req.body,
+            clienteId: cliente.codigo,
+            tareasId: String(tarea._id),
+            relacionadoA: 'tarea',
+            relacionadoId: String(tarea._id)
+        };
+        const safeClientCode = String(cliente.codigo).replace(/[^a-zA-Z0-9_-]/g, '_');
+        req.dropboxFolder = `${safeClientCode}/disenos/${tarea._id}/${nivel}`;
+        return next();
+    } catch (error) {
+        console.error('Error validando carga de diseño Dropbox:', error);
+        return res.status(500).json({ success: false, message: 'Error al validar la tarea y el cliente' });
+    }
+};
+
 const normalizeAssignedIds = (asignadoA) => {
     if (!asignadoA) return [];
 
@@ -807,6 +871,7 @@ const mapTask = (tarea, baseUrl = '') => {
             provider: archivo?.provider || 'local',
             mimeType: archivo?.mimeType || '',
             clienteId: archivo?.clienteId || clienteIdResolved,
+            nivel: archivo?.nivel || null,
             createdAt: archivo?.createdAt || null
         }))
         : [];
