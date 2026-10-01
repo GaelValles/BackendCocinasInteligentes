@@ -792,8 +792,8 @@ const mapTask = (tarea, baseUrl = '') => {
 
     const visitaData = {
         fechaProgramada: tarea.visita?.fechaProgramada ?? tarea.visitScheduledAt ?? null,
-        aprobadaPorAdmin: Boolean(tarea.visita?.aprobadaPorAdmin ?? tarea.designApprovedByAdmin),
-        aprobadaPorCliente: Boolean(tarea.visita?.aprobadaPorCliente ?? tarea.designApprovedByClient),
+        aprobadaPorAdmin: Boolean(tarea.designApprovedByAdmin || tarea.visita?.aprobadaPorAdmin),
+        aprobadaPorCliente: Boolean(tarea.designApprovedByClient || tarea.visita?.aprobadaPorCliente),
         actualizadaEn: tarea.visita?.actualizadaEn || null
     };
 
@@ -1469,7 +1469,11 @@ export const actualizarTarea = async (req, res) => {
             visitScheduledAt,
             designApprovedByAdmin,
             designApprovedByClient,
-            currentVisita: tarea.visita
+            currentVisita: {
+                ...(tarea.visita?.toObject?.() || tarea.visita || {}),
+                aprobadaPorAdmin: Boolean(tarea.designApprovedByAdmin || tarea.visita?.aprobadaPorAdmin),
+                aprobadaPorCliente: Boolean(tarea.designApprovedByClient || tarea.visita?.aprobadaPorCliente)
+            }
         });
 
         const clientApprovalRequested = designApprovedByClient === true
