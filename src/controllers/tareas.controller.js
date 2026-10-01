@@ -1475,12 +1475,8 @@ export const actualizarTarea = async (req, res) => {
         const clientApprovalRequested = designApprovedByClient === true
             || (etapaNormalizada === 'cotizacion' && tarea.etapa === 'disenos');
         if (clientApprovalRequested && !(tarea.designApprovedByClient && tarea.etapa === 'cotizacion')) {
-            if (etapaNormalizada !== 'cotizacion'
-                || estadoNormalizado !== 'pendiente'
-                || designApprovedByClient !== true
-                || citaStarted !== false
-                || citaFinished !== false) {
-                return res.status(409).json({ success: false, message: 'La aprobación debe avanzar la tarea a Cotización con el estado y los indicadores requeridos' });
+            if (designApprovedByClient !== true) {
+                return res.status(409).json({ success: false, message: 'Debe confirmar la aprobación del diseño por el cliente' });
             }
             if (tarea.etapa !== 'disenos' || !visitState.value.aprobadaPorAdmin) {
                 return res.status(409).json({ success: false, message: 'La tarea debe estar en Diseños y tener aprobación administrativa' });
@@ -1531,6 +1527,12 @@ export const actualizarTarea = async (req, res) => {
         if (citaFinished !== undefined) tarea.citaFinished = Boolean(citaFinished);
         tarea.designApprovedByAdmin = visitState.value.aprobadaPorAdmin;
         tarea.designApprovedByClient = visitState.value.aprobadaPorCliente;
+        if (clientApprovalRequested) {
+            tarea.etapa = 'cotizacion';
+            tarea.estado = 'pendiente';
+            tarea.citaStarted = false;
+            tarea.citaFinished = false;
+        }
         tarea.visitScheduledAt = visitState.value.fechaProgramada ?? null;
         tarea.visita = {
             fechaProgramada: visitState.value.fechaProgramada ?? null,
