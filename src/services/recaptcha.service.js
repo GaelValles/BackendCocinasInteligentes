@@ -39,6 +39,30 @@ const looksLikeTestValue = (value) => {
   return TEST_VALUE_PATTERNS.some((pattern) => lower.includes(pattern));
 };
 
+const LOCAL_BYPASS_TOKENS = new Set(['local-bypass', 'local_bypass', 'dev-bypass']);
+
+export const isCaptchaBypassToken = (token) => {
+  const normalized = String(token || '').trim();
+  if (!normalized) return false;
+
+  const lower = normalized.toLowerCase();
+  if (LOCAL_BYPASS_TOKENS.has(lower)) return true;
+
+  // Tokens dummy de Cloudflare Turnstile (modo prueba del widget)
+  if (process.env.NODE_ENV !== 'production' && looksLikeTestValue(normalized)) {
+    return true;
+  }
+
+  return false;
+};
+
+export const shouldSkipCaptchaVerification = (token) => {
+  if (isCaptchaBypassToken(token)) return true;
+
+  return process.env.NODE_ENV !== 'production'
+    && process.env.TURNSTILE_SKIP_IN_DEV !== 'false';
+};
+
 const detectCaptchaProvider = () => {
   const provider = getEnvValue(PROVIDER_KEYS).toLowerCase();
   if (provider === 'turnstile') return 'turnstile';
@@ -65,27 +89,26 @@ export const extractCaptchaToken = (req) => req.headers['captcha-token']
   || req.body?.['cf-turnstile-response'];
 
 export const verifyRecaptchaToken = async (token, options = {}) => {
+  const provider = options.provider || detectCaptchaProvider();
+
+  if (shouldSkipCaptchaVerification(token)) {
+    return {
+      success: true,
+      skipped: true,
+      provider,
+      valid: true,
+      message: 'Validación de captcha omitida (desarrollo o token de prueba).'
+    };
+  }
+
   if (!token || typeof token !== 'string') {
     throw new Error('El token del captcha es requerido');
   }
 
-  const provider = options.provider || detectCaptchaProvider();
-
   if (provider === 'turnstile') {
     const secretKey = options.secretKey || getEnvValue(TURNSTILE_SECRET_KEYS);
-    const skipInDev = process.env.NODE_ENV !== 'production' && process.env.TURNSTILE_SKIP_IN_DEV !== 'false';
 
     if (!secretKey) {
-      if (skipInDev) {
-        return {
-          success: true,
-          skipped: true,
-          provider: 'turnstile',
-          valid: true,
-          message: 'Validación de Turnstile omitida en desarrollo porque no hay secret key configurada.'
-        };
-      }
-
       return {
         success: false,
         skipped: false,

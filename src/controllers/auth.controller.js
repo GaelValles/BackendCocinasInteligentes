@@ -4,6 +4,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import {createAccessToken} from "../libs/jwt.js";
 import { getTokenFromRequest } from "../middlewares/validateToken.js";
+import { extractCaptchaToken, shouldSkipCaptchaVerification, verifyRecaptchaToken } from "../services/recaptcha.service.js";
+import { connectDBClientes } from "../db.js";
 
 const buildUserPayload = (user) => ({
     id: user._id,
@@ -107,12 +109,83 @@ export const login = async (req, res) => {
     const correo = (req.body?.correo || req.body?.email || req.body?.usuario || '').trim();
     const password = req.body?.password || req.body?.contrasena || req.body?.passwordHash || '';
     try {
+        const captchaToken = extractCaptchaToken(req);
+
+        if (!shouldSkipCaptchaVerification(captchaToken)) {
+            if (!captchaToken) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'El captcha (captcha-token o cf-turnstile-response) es requerido'
+                });
+            }
+
+            const captchaResult = await verifyRecaptchaToken(String(captchaToken), {
+                remoteIp: req.ip,
+                expectedAction: 'login'
+            });
+
+            if (!captchaResult.success) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'La verificación del captcha falló',
+                    error: captchaResult.error || 'Token inválido o expirado'
+                });
+            }
+        }
+
         if (!correo || !password) {
             return res.status(400).json({
                 success: false,
                 message: 'Correo y contraseña son requeridos'
             });
         }
+
+        console.log('--- INTENTO DE LOGIN ---');
+        console.log('Correo recibido:', req.body?.email || req.body?.correo || req.body?.usuario);
+        console.log('Base de datos activa en Mongoose:', connectDBClientes.name || connectDBClientes.db?.databaseName);
+        const totalUsuarios = await Admin.countDocuments();
+        console.log('Total de usuarios en esta BD:', totalUsuarios);
+        if (totalUsuarios === 0) {
+            console.warn('[login] totalUsuarios === 0: la URI conectada (connectDBUsers) podría no ser la BD con datos de producción.');
+        }
+        const listaCorreos = await Admin.find({}, 'correo nombre').lean();
+        console.log('Correos existentes en la colección Users:', listaCorreos);
+
+        try {
+            const mongoClient = typeof connectDBClientes.getClient === 'function'
+                ? connectDBClientes.getClient()
+                : connectDBClientes.client;
+
+            if (!connectDBClientes.db || !mongoClient) {
+                console.log('Error listando bases de datos: conexión MongoDB aún no disponible');
+            } else {
+                const adminDb = connectDBClientes.db.admin();
+                const dbs = await adminDb.listDatabases();
+                console.log('=== BASES DE DATOS DISPONIBLES EN ATLAS ===');
+                for (const dbInfo of dbs.databases) {
+                    const dbInstance = mongoClient.db(dbInfo.name);
+                    const collections = await dbInstance.listCollections().toArray();
+                    const collectionNames = collections.map((c) => c.name);
+                    console.log(`BD: [${dbInfo.name}] -> Colecciones:`, collectionNames);
+
+                    const usersCollectionName = collectionNames.find((name) => name.toLowerCase() === 'users');
+                    if (usersCollectionName) {
+                        const usersInDb = await dbInstance.collection(usersCollectionName)
+                            .find({}, { projection: { correo: 1, email: 1, nombre: 1, name: 1 } })
+                            .limit(20)
+                            .toArray();
+                        const usersCount = await dbInstance.collection(usersCollectionName).countDocuments();
+                        console.log(`  -> Colección ${usersCollectionName}: ${usersCount} documento(s)`);
+                        console.log(`  -> Muestra de usuarios en [${dbInfo.name}]:`, usersInDb);
+                    }
+                }
+                console.log('============================================');
+            }
+        } catch (e) {
+            console.log('Error listando bases de datos:', e.message);
+        }
+
+        console.log('-------------------------');
 
         const AdminFound = await Admin.findOne({ correo: { $regex: new RegExp(`^${correo}$`, 'i') } });
 

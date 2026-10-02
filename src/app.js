@@ -40,9 +40,15 @@ dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 dotenv.config({ path: path.resolve(__dirname, '../../.env'), quiet: true });
 
 const app = express();
+const CORE_CORS_ORIGINS = new Set([
+    'http://localhost:3000',
+    'https://app.kuchecocinasinteligentes.com'
+]);
+
 const DEV_ALLOWED_ORIGINS = new Set([
     'http://localhost:5173',
-    'http://localhost:3000'
+    'http://localhost:3000',
+    ...CORE_CORS_ORIGINS
 ]);
 
 const parseAllowedOrigins = () => {
@@ -52,7 +58,8 @@ const parseAllowedOrigins = () => {
         process.env.FRONTEND_PUBLIC_URL,
         process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
         'https://kuchecocinasinteligentes.com',
-        'https://www.kuchecocinasinteligentes.com'
+        'https://www.kuchecocinasinteligentes.com',
+        'https://app.kuchecocinasinteligentes.com'
     ]
         .filter(Boolean)
         .flatMap((item) => String(item).split(','))
@@ -91,6 +98,7 @@ app.use((req, res, next) => {
 export const isAllowedOrigin = (origin) => {
     if (allowAllOrigins()) return true;
     if (!origin) return true;
+    if (CORE_CORS_ORIGINS.has(origin)) return true;
     if (process.env.NODE_ENV !== 'production' && DEV_ALLOWED_ORIGINS.has(origin)) return true;
     if (parseAllowedOrigins().has(origin)) return true;
 
