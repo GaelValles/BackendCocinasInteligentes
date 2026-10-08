@@ -11,6 +11,22 @@ import {
     disableTrackingAccessByProjectId
 } from '../services/trackingAccess.service.js';
 
+const TIPOS_PROYECTO = ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'];
+
+const parseContractDate = (value) => {
+    if (value === '') return { valid: true, date: null };
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return { valid: false };
+    }
+
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+        return { valid: false };
+    }
+
+    return { valid: true, date };
+};
+
 /**
  * Obtener todos los proyectos (con filtros opcionales)
  * GET /api/proyectos
@@ -651,6 +667,73 @@ export const eliminarProyecto = async (req, res) => {
             message: 'Error al eliminar proyecto',
             error: error.message
         });
+    }
+};
+
+export const actualizarDatosContratoProyecto = async (req, res) => {
+    try {
+        const rol = String(req.admin?.rol || '').toLowerCase();
+        if (!['admin', 'arquitecto', 'empleado', 'empleado_general', 'ingeniero', 'staff'].includes(rol)) {
+            return res.status(403).json({ success: false, message: 'No autorizado para actualizar datos del contrato' });
+        }
+
+        const codigo = String(req.params.codigo || '').trim().toUpperCase();
+        if (!codigo) {
+            return res.status(400).json({ success: false, message: 'Código de proyecto inválido' });
+        }
+
+        const body = req.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return res.status(400).json({ success: false, message: 'El cuerpo de la solicitud debe ser un objeto' });
+        }
+        const camposPermitidos = new Set(['tipo', 'fechaContrato', 'fechaEntrega']);
+        if (Object.keys(body).some((campo) => !camposPermitidos.has(campo))) {
+            return res.status(400).json({ success: false, message: 'El cuerpo contiene campos no permitidos' });
+        }
+
+        const proyecto = await Proyecto.findOne({ clienteId: codigo }).sort({ updatedAt: -1 });
+        if (!proyecto) {
+            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+        }
+
+        if (Object.prototype.hasOwnProperty.call(body, 'tipo')) {
+            if (!TIPOS_PROYECTO.includes(body.tipo)) {
+                return res.status(400).json({ success: false, message: 'Tipo de proyecto inválido' });
+            }
+            proyecto.tipo = body.tipo;
+        }
+
+        const hasFechaContrato = Object.prototype.hasOwnProperty.call(body, 'fechaContrato');
+        const hasFechaEntrega = Object.prototype.hasOwnProperty.call(body, 'fechaEntrega');
+        const fechaContrato = hasFechaContrato
+            ? parseContractDate(body.fechaContrato)
+            : { valid: true, date: proyecto.fechaContrato };
+        const fechaEntrega = hasFechaEntrega
+            ? parseContractDate(body.fechaEntrega)
+            : { valid: true, date: proyecto.fechaEntrega };
+
+        if (!fechaContrato.valid || !fechaEntrega.valid) {
+            return res.status(400).json({
+                success: false,
+                message: 'Las fechas deben tener formato YYYY-MM-DD o ser una cadena vacía'
+            });
+        }
+
+        if (fechaContrato.date && fechaEntrega.date && fechaEntrega.date < fechaContrato.date) {
+            return res.status(400).json({
+                success: false,
+                message: 'La fecha de entrega debe ser igual o posterior a la fecha de contrato'
+            });
+        }
+
+        if (hasFechaContrato) proyecto.fechaContrato = fechaContrato.date;
+        if (hasFechaEntrega) proyecto.fechaEntrega = fechaEntrega.date;
+
+        await proyecto.save();
+        return res.json({ success: true, data: proyecto });
+    } catch (error) {
+        console.error('Error actualizando datos de contrato del proyecto:', error);
+        return res.status(500).json({ success: false, message: 'Error al actualizar datos de contrato' });
     }
 };
 

@@ -60,6 +60,14 @@ const proyectoSchema = new mongoose.Schema({
         enum: ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'],
         required: true
     },
+    fechaContrato: {
+        type: Date,
+        default: null
+    },
+    fechaEntrega: {
+        type: Date,
+        default: null
+    },
     estado: {
         type: String,
         enum: ['cotizacion', 'aprobado', 'en_produccion', 'instalando', 'completado'],

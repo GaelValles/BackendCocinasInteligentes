@@ -1,5 +1,7 @@
 import Tarea from '../models/tarea.model.js';
 import Citas from '../models/citas.model.js';
+import Proyecto from '../models/proyecto.model.js';
+import mongoose from 'mongoose';
 
 const ETAPAS_VALIDAS = ['citas', 'disenos', 'cotizacion', 'contrato'];
 const ROLES_OPERATIVOS = ['ingeniero', 'empleado', 'empleado_general', 'staff'];
@@ -22,7 +24,13 @@ const calculatePagosSummary = (pagos = {}) => {
     return { totalPagado };
 };
 
-const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
+const toISODate = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = null) => {
     const sourceType = item.sourceType
         || (item.sourceCitaId ? 'cita' : null)
         || (item.sourceDisenoId ? 'diseno' : null);
@@ -55,14 +63,21 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
         || citaContext?.telefonoCliente
         || '';
 
-    const pagos = item.pagos && typeof item.pagos === 'object'
+    const taskPagos = item.pagos && typeof item.pagos === 'object'
         ? item.pagos
         : {
             anticipo: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
             segundoPago: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' },
             liquidacion: { amount: 0, date: '', receiptLabel: 'Ver recibo', receiptImage: '' }
         };
-    const inversion = Number.isFinite(Number(item.inversion)) ? Number(item.inversion) : 0;
+    const pagos = proyecto?.pagos && typeof proyecto.pagos === 'object' ? proyecto.pagos : taskPagos;
+    const taskInversion = Number.isFinite(Number(item.inversion)) ? Number(item.inversion) : 0;
+    const inversion = proyecto
+        ? (Number.isFinite(Number(proyecto.presupuestoTotal)) ? Number(proyecto.presupuestoTotal) : 0)
+        : taskInversion;
+    const presupuestoTotal = proyecto
+        ? (Number.isFinite(Number(proyecto.presupuestoTotal)) ? Number(proyecto.presupuestoTotal) : 0)
+        : null;
     const { totalPagado } = calculatePagosSummary(pagos);
     const saldoPendiente = Math.max(inversion - totalPagado, 0);
 
@@ -79,6 +94,10 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map()) => {
     assignedTo: item.asignadoANombre || [],
     nombreProyecto: item.nombreProyecto || '',
     proyectoId: item.proyectoId || null,
+    tipo: proyecto?.tipo || null,
+    fechaContrato: toISODate(proyecto?.fechaContrato),
+    fechaEntrega: toISODate(proyecto?.fechaEntrega),
+    presupuestoTotal,
     fechaLimite: item.fechaLimite || null,
     scheduledAt: item.scheduledAt || null,
     visitScheduledAt: item.visitScheduledAt || null,
@@ -193,7 +212,25 @@ const getColumn = (etapa) => async (req, res) => {
             }
         }
 
-        return res.json({ success: true, data: data.map((item) => mapTask(item, baseUrl, citaContextById)) });
+        const projectIds = [...new Set(data
+            .map((item) => String(item.proyectoId || ''))
+            .filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+        const proyectos = projectIds.length
+            ? await Proyecto.find({ _id: { $in: projectIds } })
+                .select('_id tipo fechaContrato fechaEntrega presupuestoTotal pagos')
+                .lean()
+            : [];
+        const proyectosById = new Map(proyectos.map((proyecto) => [String(proyecto._id), proyecto]));
+
+        return res.json({
+            success: true,
+            data: data.map((item) => mapTask(
+                item,
+                baseUrl,
+                citaContextById,
+                proyectosById.get(String(item.proyectoId || '')) || null
+            ))
+        });
     } catch (err) {
         console.error(`Error listando kanban/${etapa}:`, err);
         return res.status(500).json({ success: false, message: `Error listando etapa ${etapa}`, error: err.message });
