@@ -1,6 +1,6 @@
 import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
-
+//si
 const visitaSchema = new mongoose.Schema({
     fechaProgramada: {
         type: Date,
