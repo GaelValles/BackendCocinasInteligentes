@@ -95,10 +95,10 @@ export const obtenerProyectos = async (req, res) => {
         const proyectosFormateados = proyectos.map(proyecto => ({
             _id: proyecto._id,
             nombre: proyecto.nombre,
-            cliente: proyecto.cliente._id,
+            cliente: proyecto.cliente?._id || null,
             clienteRef: proyecto.clienteRef || null,
             clienteId: proyecto.clienteId || '',
-            nombreCliente: proyecto.cliente.nombre,
+            nombreCliente: proyecto.cliente?.nombre || proyecto.nombreCliente || '',
             tipo: proyecto.tipo,
             estado: proyecto.estado,
             timelineActual: proyecto.timelineActual,
@@ -164,7 +164,7 @@ export const obtenerProyecto = async (req, res) => {
         const userRole = req.admin.rol;
         const userId = req.admin._id.toString();
 
-        if (userRole === 'cliente' && proyecto.cliente._id.toString() !== userId) {
+        if (userRole === 'cliente' && String(proyecto.cliente?._id || '') !== userId) {
             return res.status(403).json({
                 success: false,
                 message: 'No tienes permiso para ver este proyecto'
@@ -175,12 +175,12 @@ export const obtenerProyecto = async (req, res) => {
         const proyectoFormateado = {
             _id: proyecto._id,
             nombre: proyecto.nombre,
-            cliente: proyecto.cliente._id,
+            cliente: proyecto.cliente?._id || null,
             clienteRef: proyecto.clienteRef || null,
             clienteId: proyecto.clienteId || '',
-            nombreCliente: proyecto.cliente.nombre,
-            correoCliente: proyecto.cliente.correo,
-            telefonoCliente: proyecto.cliente.telefono,
+            nombreCliente: proyecto.cliente?.nombre || proyecto.nombreCliente || '',
+            correoCliente: proyecto.cliente?.correo,
+            telefonoCliente: proyecto.cliente?.telefono,
             tipo: proyecto.tipo,
             estado: proyecto.estado,
             timelineActual: proyecto.timelineActual,
@@ -398,10 +398,10 @@ export const actualizarProyecto = async (req, res) => {
         const proyectoFormateado = {
             _id: proyecto._id,
             nombre: proyecto.nombre,
-            cliente: proyecto.cliente._id,
+            cliente: proyecto.cliente?._id || null,
             clienteRef: proyecto.clienteRef || null,
             clienteId: proyecto.clienteId || '',
-            nombreCliente: proyecto.cliente.nombre,
+            nombreCliente: proyecto.cliente?.nombre || proyecto.nombreCliente || '',
             tipo: proyecto.tipo,
             estado: proyecto.estado,
             timelineActual: proyecto.timelineActual,
@@ -714,18 +714,38 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
             return res.status(400).json({ success: false, message: 'El cuerpo contiene campos no permitidos' });
         }
 
-        const proyecto = await resolveProyectoByCodigo(req.params.codigo);
+        if (Object.prototype.hasOwnProperty.call(body, 'tipo') && !TIPOS_PROYECTO.includes(body.tipo)) {
+            return res.status(400).json({ success: false, message: 'Tipo de proyecto inválido' });
+        }
+
+        let proyecto = await resolveProyectoByCodigo(req.params.codigo);
+        let tareaParaVincular = null;
+
+        // Sin proyecto previo: se crea y se vincula por id a la tarjeta (tarea) del cliente.
         if (!proyecto) {
-            return res.status(404).json({
-                success: false,
-                message: 'Proyecto no encontrado para el código indicado (el cliente aún no tiene un proyecto vinculado)'
+            const codigo = normalizeCodigoInput(req.params.codigo);
+            tareaParaVincular = await Tarea.findOne({ clienteId: codigo }).sort({ updatedAt: -1 }).lean();
+            if (!tareaParaVincular) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'No existe un cliente con el código indicado'
+                });
+            }
+
+            const nombreCliente = tareaParaVincular.cliente?.nombre || tareaParaVincular.cita?.nombreCliente || 'Cliente';
+            proyecto = new Proyecto({
+                nombre: tareaParaVincular.nombreProyecto || `Proyecto ${nombreCliente}`,
+                nombreCliente,
+                clienteId: codigo,
+                clienteRef: tareaParaVincular.clienteRef || null,
+                tipo: body.tipo || 'Cocina',
+                estado: 'aprobado',
+                presupuestoTotal: Number(tareaParaVincular.inversion) || 0,
+                pagos: tareaParaVincular.pagos || undefined
             });
         }
 
         if (Object.prototype.hasOwnProperty.call(body, 'tipo')) {
-            if (!TIPOS_PROYECTO.includes(body.tipo)) {
-                return res.status(400).json({ success: false, message: 'Tipo de proyecto inválido' });
-            }
             proyecto.tipo = body.tipo;
         }
 
@@ -756,6 +776,15 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
         if (hasFechaEntrega) proyecto.fechaEntrega = fechaEntrega.date;
 
         await proyecto.save();
+
+        if (tareaParaVincular) {
+            await Tarea.updateOne(
+                { _id: tareaParaVincular._id },
+                { $set: { proyectoId: String(proyecto._id), nombreProyecto: proyecto.nombre } }
+            );
+            await upsertTrackingAccessFromProyecto(proyecto._id);
+        }
+
         return res.json({ success: true, data: proyecto });
     } catch (error) {
         console.error('Error actualizando datos de contrato del proyecto:', error);

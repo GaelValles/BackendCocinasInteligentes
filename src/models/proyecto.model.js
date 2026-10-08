@@ -40,7 +40,7 @@ const proyectoSchema = new mongoose.Schema({
     cliente: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Users',
-        required: true
+        default: null
     },
     nombreCliente: {
         type: String,
