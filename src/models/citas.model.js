@@ -2,6 +2,7 @@ import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
 import { resolveOrCreateClienteIdentidad } from '../services/clienteIdentidad.service.js';
 //SIIIIIIIIIIIII
+//Sección de citas
 const citasSchema = new mongoose.Schema({
     // Fecha en que se agendó la cita
     fechaAgendada: {

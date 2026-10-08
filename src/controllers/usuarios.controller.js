@@ -228,7 +228,7 @@ export const obtenerPorId = async (req, res) => {
 export const actualizar = async (req, res) => {
     try {
         const { id } = req.params;
-        const { nombre, name, correo, email, telefono, phone, rol, role } = req.body || {};
+        const { nombre, name, correo, email, telefono, phone, rol, role, password, contrasena } = req.body || {};
 
         const updateData = {};
         const finalNombre = (nombre || name || '').trim();
@@ -256,6 +256,18 @@ export const actualizar = async (req, res) => {
                 });
             }
             updateData.rol = rolNormalized;
+        }
+
+        const rawPasswordInput = password ?? contrasena;
+        if (rawPasswordInput !== undefined && rawPasswordInput !== null && String(rawPasswordInput).trim() !== '') {
+            const newPassword = String(rawPasswordInput).trim();
+            if (newPassword.length < 6) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'La contraseña debe tener al menos 6 caracteres'
+                });
+            }
+            updateData.password = await bcrypt.hash(newPassword, 10);
         }
 
         if (Object.keys(updateData).length === 0) {
