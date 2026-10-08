@@ -8,8 +8,32 @@ import Cotizacion from '../models/cotizacion.model.js';
 import Levantamiento from '../models/levantamiento.model.js';
 import {
     upsertTrackingAccessFromProyecto,
-    disableTrackingAccessByProjectId
+    disableTrackingAccessByProjectId,
+    normalizeCodigoInput,
+    findEnabledAccessByCodigo6
 } from '../services/trackingAccess.service.js';
+import Tarea from '../models/tarea.model.js';
+
+const resolveProyectoByCodigo = async (rawCodigo) => {
+    const codigo = normalizeCodigoInput(rawCodigo);
+    if (!codigo) return null;
+
+    const access = await findEnabledAccessByCodigo6(codigo);
+    if (access?.projectId && mongoose.Types.ObjectId.isValid(String(access.projectId))) {
+        const byAccess = await Proyecto.findById(access.projectId);
+        if (byAccess) return byAccess;
+    }
+
+    const byClienteId = await Proyecto.findOne({ clienteId: codigo }).sort({ updatedAt: -1 });
+    if (byClienteId) return byClienteId;
+
+    const tarea = await Tarea.findOne({ clienteId: codigo, proyectoId: { $ne: null } }).sort({ updatedAt: -1 }).lean();
+    if (tarea?.proyectoId && mongoose.Types.ObjectId.isValid(String(tarea.proyectoId))) {
+        return Proyecto.findById(tarea.proyectoId);
+    }
+
+    return null;
+};
 
 const TIPOS_PROYECTO = ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'];
 
@@ -677,8 +701,7 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
             return res.status(403).json({ success: false, message: 'No autorizado para actualizar datos del contrato' });
         }
 
-        const codigo = String(req.params.codigo || '').trim().toUpperCase();
-        if (!codigo) {
+        if (!normalizeCodigoInput(req.params.codigo)) {
             return res.status(400).json({ success: false, message: 'Código de proyecto inválido' });
         }
 
@@ -691,9 +714,12 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
             return res.status(400).json({ success: false, message: 'El cuerpo contiene campos no permitidos' });
         }
 
-        const proyecto = await Proyecto.findOne({ clienteId: codigo }).sort({ updatedAt: -1 });
+        const proyecto = await resolveProyectoByCodigo(req.params.codigo);
         if (!proyecto) {
-            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
+            return res.status(404).json({
+                success: false,
+                message: 'Proyecto no encontrado para el código indicado (el cliente aún no tiene un proyecto vinculado)'
+            });
         }
 
         if (Object.prototype.hasOwnProperty.call(body, 'tipo')) {
