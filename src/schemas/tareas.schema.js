@@ -156,6 +156,9 @@ const crearTareaBaseSchema = z.object({
     nombreCliente: z.string().optional(),
     correoCliente: z.string().optional(),
     telefonoCliente: z.string().optional(),
+    codigoProyecto: z.string().optional(),
+    codigo: z.string().optional(),
+    clienteId: z.string().optional(),
     visita: visitaPayloadSchema,
     // Legacy input keys accepted temporarily.
     sourceCitaId: z.string().optional(),

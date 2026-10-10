@@ -16,13 +16,79 @@ const normalizePhone = (value) => {
 
 const normalizeName = (value) => String(value || '').trim();
 
-const randomCode6 = () => {
+export const randomCode6 = () => {
     let output = '';
     for (let i = 0; i < 6; i += 1) {
         const idx = Math.floor(Math.random() * CODE_ALPHABET.length);
         output += CODE_ALPHABET[idx];
     }
     return output;
+};
+
+export const normalizeClienteCodigoValue = (value = '') => String(value || '').trim().toUpperCase().replace(/^K-/, '');
+
+const CLIENTE_CODIGO_REGEX = /^[A-Z2-9]{6}$/;
+
+export const isValidClienteCodigo = (value) => CLIENTE_CODIGO_REGEX.test(normalizeClienteCodigoValue(value));
+
+export const generateUniqueClienteCodigo = async () => {
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+        const codigo = randomCode6();
+        const exists = await ClienteIdentidad.findOne({ codigo }).select('_id').lean();
+        if (!exists) return codigo;
+    }
+
+    throw new Error('No fue posible generar un codigo unico para el cliente');
+};
+
+const resolveOrCreateClienteIdentidadByCodigo = async ({ codigo, nombre }) => {
+    const normalized = normalizeClienteCodigoValue(codigo);
+    if (!isValidClienteCodigo(normalized)) return null;
+
+    const existing = await ClienteIdentidad.findOne({ codigo: normalized });
+    if (existing) return existing;
+
+    try {
+        return await ClienteIdentidad.create({
+            codigo: normalized,
+            nombre: normalizeName(nombre) || '',
+            correo: '',
+            telefono: ''
+        });
+    } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+        return ClienteIdentidad.findOne({ codigo: normalized });
+    }
+};
+
+export const ensureClienteIdentidadForTarea = async ({
+    nombre,
+    correo,
+    telefono,
+    codigoPreferido
+} = {}) => {
+    const fromContact = await resolveOrCreateClienteIdentidad({
+        nombre,
+        correo,
+        telefono
+    });
+    if (fromContact) return fromContact;
+
+    if (codigoPreferido && isValidClienteCodigo(codigoPreferido)) {
+        const fromCode = await resolveOrCreateClienteIdentidadByCodigo({
+            codigo: codigoPreferido,
+            nombre
+        });
+        if (fromCode) return fromCode;
+    }
+
+    const codigo = await generateUniqueClienteCodigo();
+    return ClienteIdentidad.create({
+        codigo,
+        nombre: normalizeName(nombre) || '',
+        correo: '',
+        telefono: ''
+    });
 };
 
 const isDuplicateKeyError = (error) => Number(error?.code) === 11000;
