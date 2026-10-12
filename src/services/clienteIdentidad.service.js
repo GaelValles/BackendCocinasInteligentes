@@ -16,6 +16,32 @@ const normalizePhone = (value) => {
 
 const normalizeName = (value) => String(value || '').trim();
 
+const buildClienteIdentidadCreatePayload = ({
+    codigo,
+    nombre,
+    correo,
+    telefono,
+    correoNormalizado,
+    telefonoNormalizado
+}) => {
+    const payload = {
+        codigo,
+        nombre: normalizeName(nombre) || ''
+    };
+
+    if (correoNormalizado) {
+        payload.correoNormalizado = correoNormalizado;
+        payload.correo = correo || correoNormalizado;
+    }
+
+    if (telefonoNormalizado) {
+        payload.telefonoNormalizado = telefonoNormalizado;
+        payload.telefono = telefono || telefonoNormalizado;
+    }
+
+    return payload;
+};
+
 export const randomCode6 = () => {
     let output = '';
     for (let i = 0; i < 6; i += 1) {
@@ -49,12 +75,10 @@ const resolveOrCreateClienteIdentidadByCodigo = async ({ codigo, nombre }) => {
     if (existing) return existing;
 
     try {
-        return await ClienteIdentidad.create({
+        return await ClienteIdentidad.create(buildClienteIdentidadCreatePayload({
             codigo: normalized,
-            nombre: normalizeName(nombre) || '',
-            correo: '',
-            telefono: ''
-        });
+            nombre
+        }));
     } catch (error) {
         if (!isDuplicateKeyError(error)) throw error;
         return ClienteIdentidad.findOne({ codigo: normalized });
@@ -83,12 +107,10 @@ export const ensureClienteIdentidadForTarea = async ({
     }
 
     const codigo = await generateUniqueClienteCodigo();
-    return ClienteIdentidad.create({
+    return ClienteIdentidad.create(buildClienteIdentidadCreatePayload({
         codigo,
-        nombre: normalizeName(nombre) || '',
-        correo: '',
-        telefono: ''
-    });
+        nombre
+    }));
 };
 
 const isDuplicateKeyError = (error) => Number(error?.code) === 11000;
@@ -168,14 +190,14 @@ export const resolveOrCreateClienteIdentidad = async (payload = {}) => {
     for (let attempt = 0; attempt < 25; attempt += 1) {
         const codigo = randomCode6();
         try {
-            const created = await ClienteIdentidad.create({
+            const created = await ClienteIdentidad.create(buildClienteIdentidadCreatePayload({
                 codigo,
                 nombre,
                 correo,
                 telefono,
                 correoNormalizado,
                 telefonoNormalizado
-            });
+            }));
             return created;
         } catch (error) {
             if (!isDuplicateKeyError(error)) throw error;
@@ -186,6 +208,16 @@ export const resolveOrCreateClienteIdentidad = async (payload = {}) => {
     }
 
     throw new Error('No fue posible generar un codigo unico para el cliente');
+};
+
+export const repairClienteIdentidadSparseIndexes = async () => {
+    try {
+        await ClienteIdentidad.updateMany({ correoNormalizado: null }, { $unset: { correoNormalizado: '' } });
+        await ClienteIdentidad.updateMany({ telefonoNormalizado: null }, { $unset: { telefonoNormalizado: '' } });
+        await ClienteIdentidad.syncIndexes();
+    } catch (error) {
+        console.warn('repairClienteIdentidadSparseIndexes:', error?.message || error);
+    }
 };
 
 export const syncProyectoClienteIdentidad = async ({ proyectoId, clienteIdentidad }) => {

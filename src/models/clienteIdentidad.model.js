@@ -29,17 +29,15 @@ const clienteIdentidadSchema = new mongoose.Schema({
     },
     correoNormalizado: {
         type: String,
-        default: null,
         unique: true,
         sparse: true,
-        index: true
+        trim: true
     },
     telefonoNormalizado: {
         type: String,
-        default: null,
         unique: true,
         sparse: true,
-        index: true
+        trim: true
     },
     archivos: [{
         id: {
