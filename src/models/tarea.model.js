@@ -114,6 +114,14 @@ const tareaSchema = new mongoose.Schema({
     min: 0,
     default: 0
   },
+  cotizacionesFormales: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
+  preliminarCotizaciones: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
   etapaActual: {
     type: String,
     default: ''
