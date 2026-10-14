@@ -1,7 +1,8 @@
 import { connectDBClientes } from '../db.js';
 import mongoose from 'mongoose';
 import {
-  resolveOrCreateClienteIdentidad,
+  ensureClienteIdentidadForTarea,
+  normalizeClienteCodigoValue,
   syncProyectoClienteIdentidad
 } from '../services/clienteIdentidad.service.js';
 
@@ -86,7 +87,9 @@ const tareaSchema = new mongoose.Schema({
   cliente: {
     nombre: { type: String, default: '' },
     correo: { type: String, default: '' },
-    telefono: { type: String, default: '' }
+    telefono: { type: String, default: '' },
+    clienteId: { type: String, default: '' },
+    codigo: { type: String, default: '' }
   },
   clienteRef: {
     type: mongoose.Schema.Types.ObjectId,
@@ -110,6 +113,14 @@ const tareaSchema = new mongoose.Schema({
     type: Number,
     min: 0,
     default: 0
+  },
+  cotizacionesFormales: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
+  },
+  preliminarCotizaciones: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: []
   },
   etapaActual: {
     type: String,
@@ -177,16 +188,23 @@ tareaSchema.pre('save', async function preSaveClienteIdentidad(next) {
       telefono: clienteTelefono
     };
 
-    const clienteIdentidad = await resolveOrCreateClienteIdentidad({
+    const codigoPreferido = normalizeClienteCodigoValue(this.clienteId || this.cliente?.clienteId || this.cliente?.codigo);
+
+    const clienteIdentidad = await ensureClienteIdentidadForTarea({
       nombre: clienteNombre,
       correo: clienteCorreo,
-      telefono: clienteTelefono
+      telefono: clienteTelefono,
+      codigoPreferido: codigoPreferido || undefined
     });
 
-    if (clienteIdentidad) {
-      this.clienteRef = clienteIdentidad._id;
-      this.clienteId = clienteIdentidad.codigo;
+    if (!clienteIdentidad) {
+      return next(new Error('No fue posible asignar un codigo publico (clienteId) a la tarea'));
     }
+
+    this.clienteRef = clienteIdentidad._id;
+    this.clienteId = clienteIdentidad.codigo;
+    this.cliente.clienteId = this.clienteId;
+    this.cliente.codigo = this.clienteId;
 
     next();
   } catch (error) {

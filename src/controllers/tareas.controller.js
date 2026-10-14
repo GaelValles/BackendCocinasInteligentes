@@ -10,6 +10,7 @@ import Admin from '../models/admin.model.js';
 import { uploadFileToDropbox } from '../libs/dropbox.js';
 import { uploadFileToCloudinary } from '../libs/cloudinary.js';
 import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
+import { isValidClienteCodigo } from '../services/clienteIdentidad.service.js';
 
 const ROLES_ASIGNABLES = ['admin', 'ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
@@ -1131,8 +1132,21 @@ export const crearTarea = async (req, res) => {
             inversion,
             inversionTotal,
             seguimientoNota,
-            notaSeguimiento
+            notaSeguimiento,
+            codigoProyecto,
+            codigo,
+            clienteId: clienteIdBody
         } = req.body;
+
+        const preferredClienteCodigo = normalizeClienteCodigo(
+            codigoProyecto || codigo || clienteIdBody || cliente?.clienteId || cliente?.codigo || ''
+        );
+        if (preferredClienteCodigo && !isValidClienteCodigo(preferredClienteCodigo)) {
+            return res.status(400).json({
+                success: false,
+                message: 'codigoProyecto/codigo/clienteId invalido. Debe ser alfanumerico de 6 caracteres (A-Z, 2-9)'
+            });
+        }
 
         const fechaLimiteParsed = validateDateInput('fechaLimite', fechaLimite);
         if (!fechaLimiteParsed.ok) {
@@ -1274,6 +1288,7 @@ export const crearTarea = async (req, res) => {
             estado: estado || 'pendiente',
             asignadoA: resolvedAssignedIds,
             asignadoANombre: assignedUsers.map((u) => u.nombre),
+            ...(preferredClienteCodigo ? { clienteId: preferredClienteCodigo } : {}),
             proyectoId: projectResult.proyectoId,
             nombreProyecto: nombreProyecto || projectResult.nombreProyecto || '',
             fechaLimite: fechaLimiteParsed.value ?? null,

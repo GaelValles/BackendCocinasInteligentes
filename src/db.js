@@ -88,10 +88,24 @@ const connectOnce = async (connection) => {
   return connection;
 };
 
+const runClienteIdentidadIndexRepairOnce = async () => {
+  if (globalCache.__clienteIdentidadIndexRepairDone) return;
+
+  try {
+    const { repairClienteIdentidadSparseIndexes } = await import('./services/clienteIdentidad.service.js');
+    await repairClienteIdentidadSparseIndexes();
+  } catch (error) {
+    console.warn('runClienteIdentidadIndexRepairOnce:', error?.message || error);
+  }
+
+  globalCache.__clienteIdentidadIndexRepairDone = true;
+};
+
 export const ensureDbConnection = async () => {
   const connection = getOrCreateConnection();
 
   if (connection.readyState === 1) {
+    await runClienteIdentidadIndexRepairOnce();
     return connection;
   }
 
@@ -102,7 +116,8 @@ export const ensureDbConnection = async () => {
         globalCache.__mongooseDbReadyPromise = null;
         throw error;
       })
-      .then((conn) => {
+      .then(async (conn) => {
+        await runClienteIdentidadIndexRepairOnce();
         dbReadyPromise = null;
         globalCache.__mongooseDbReadyPromise = null;
         return conn;

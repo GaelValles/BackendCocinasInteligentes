@@ -108,13 +108,124 @@ const mapArchivos = (archivos = []) => {
 
 const TRACKING_RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
 
-const normalizeTrackingFile = (archivo = {}) => {
-    const tipo = String(archivo?.tipo || '').trim() || 'archivo';
+const PROYECTO_PUBLIC_FILE_TYPES = new Set([
+    'jpg', 'jpeg', 'pdf', 'png', 'webp', 'cotizacion_formal', 'hoja_taller',
+    'levantamiento_detallado', 'recibo', 'recibo_1', 'recibo_2', 'recibo_3', 'contrato', 'otro'
+]);
+
+const inferFileTypeFromName = (nombre, fallback = 'otro') => {
+    const lower = String(nombre || '').toLowerCase();
+    if (lower.endsWith('.pdf')) return 'pdf';
+    if (lower.endsWith('.png')) return 'png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'jpg';
+    if (lower.endsWith('.webp')) return 'webp';
+    return fallback;
+};
+
+const normalizePublicFileType = (type, nombre) => {
+    const raw = String(type || '').trim().toLowerCase();
+    if (PROYECTO_PUBLIC_FILE_TYPES.has(raw)) return raw;
+
+    const aliases = {
+        img: 'png',
+        image: 'png',
+        archivo: 'otro',
+        levantamiento: 'levantamiento_detallado',
+        cotizacion: 'cotizacion_formal',
+        formal: 'cotizacion_formal'
+    };
+    if (aliases[raw]) return aliases[raw];
+
+    return inferFileTypeFromName(nombre, 'otro');
+};
+
+const normalizeIncomingArchivoFields = (archivo = {}) => {
+    const nombre = String(archivo?.nombre || archivo?.name || '').trim();
+    const url = String(archivo?.url || archivo?.src || '').trim();
+    const typeRaw = archivo?.tipo || archivo?.type || '';
+    return { nombre, url, typeRaw };
+};
+
+const toProyectoArchivoPublico = (archivo) => {
+    const { nombre, url, typeRaw } = normalizeIncomingArchivoFields(archivo);
+    if (!url) return null;
+
     return {
-        id: archivo?._id ? String(archivo._id) : String(archivo?.id || `${archivo?.nombre || 'archivo'}-${archivo?.createdAt || Date.now()}`),
-        nombre: String(archivo?.nombre || ''),
+        nombre: nombre || 'Archivo',
+        tipo: normalizePublicFileType(typeRaw, nombre),
+        url,
+        createdAt: archivo?.createdAt ? new Date(archivo.createdAt) : new Date()
+    };
+};
+
+const toTareaArchivo = (archivo, clienteId = '') => {
+    const { nombre, url, typeRaw } = normalizeIncomingArchivoFields(archivo);
+    if (!url) return null;
+
+    const tipo = String(typeRaw || inferFileTypeFromName(nombre, 'otro')).trim() || 'otro';
+
+    return {
+        id: String(archivo?.id || ''),
+        nombre: nombre || 'Archivo',
         tipo,
-        url: String(archivo?.url || '')
+        nivel: archivo?.nivel ?? null,
+        url,
+        key: String(archivo?.key || ''),
+        provider: archivo?.provider || 'local',
+        mimeType: String(archivo?.mimeType || ''),
+        clienteId: String(archivo?.clienteId || clienteId || ''),
+        createdAt: archivo?.createdAt ? new Date(archivo.createdAt) : new Date()
+    };
+};
+
+const mergeArchivosByUrl = (existing = [], incoming = [], mapFn) => {
+    const list = (Array.isArray(existing) ? existing : []).map((item) => (
+        item?.toObject ? item.toObject() : item
+    ));
+    const seen = new Set(
+        list.map((item) => String(item?.url || item?.src || '').trim()).filter(Boolean)
+    );
+
+    for (const raw of (Array.isArray(incoming) ? incoming : [])) {
+        const mapped = mapFn(raw);
+        if (!mapped?.url || seen.has(mapped.url)) continue;
+        seen.add(mapped.url);
+        list.push(mapped);
+    }
+
+    return list;
+};
+
+const asTrackingCotizaciones = (value) => (Array.isArray(value) ? value : []);
+
+const resolveTrackingCotizaciones = (tarea) => {
+    const cotizacionesFormales = asTrackingCotizaciones(tarea?.cotizacionesFormales);
+    const preliminarCotizaciones = asTrackingCotizaciones(tarea?.preliminarCotizaciones);
+
+    return {
+        cotizacionesFormales,
+        preliminarCotizaciones,
+        cotizacionFormalData: cotizacionesFormales,
+        preliminarData: preliminarCotizaciones
+    };
+};
+
+const normalizeTrackingFile = (archivo = {}) => {
+    const nombre = String(archivo?.nombre || archivo?.name || '').trim();
+    const url = String(archivo?.url || archivo?.src || '').trim();
+    let tipo = String(archivo?.tipo || archivo?.type || '').trim();
+
+    if (!tipo) {
+        tipo = inferFileTypeFromName(nombre, 'archivo');
+    }
+
+    return {
+        id: archivo?._id ? String(archivo._id) : String(archivo?.id || `${nombre || 'archivo'}-${archivo?.createdAt || Date.now()}`),
+        nombre,
+        tipo,
+        url,
+        src: url,
+        name: nombre
     };
 };
 
@@ -371,6 +482,10 @@ const buildProjectSnapshot = async (access) => {
 
         const kanbanStage = tarea.etapa || '';
         const kanbanFollowUpStatus = tarea.followUpStatus || 'pendiente';
+        const archivos = mergeTrackingFiles(tarea.archivos, clientReceipts);
+        const cotizaciones = resolveTrackingCotizaciones(tarea);
+        const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
+        const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
 
         return {
             codigo: codigoClienteIdentidad,
@@ -393,13 +508,10 @@ const buildProjectSnapshot = async (access) => {
             totalPagado,
             saldoPendiente,
             seguimientoNota: String(tarea.seguimientoNota || ''),
-            archivos: mergeTrackingFiles(tarea.archivos, clientReceipts),
-            cotizacionPreliminarImage: '',
-            cotizacionFormalImage: '',
-            cotizacionesFormales: [],
-            cotizacionFormalData: [],
-            preliminarCotizaciones: [],
-            preliminarData: [],
+            archivos,
+            cotizacionPreliminarImage,
+            cotizacionFormalImage,
+            ...cotizaciones,
             projectId: tarea.proyectoId || null,
             taskId: String(tarea._id)
         };
@@ -424,6 +536,7 @@ const buildProjectSnapshot = async (access) => {
     };
 
     const archivos = mergeTrackingFiles(proyecto.archivosPublicos, proyecto.archivos, ultimaTarea?.archivos, clientReceipts);
+    const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
     const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
     const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
     const pagos = buildPagosDto({ proyecto, tarea: ultimaTarea, receiptIndex });
@@ -460,11 +573,9 @@ const buildProjectSnapshot = async (access) => {
         archivos,
         cotizacionPreliminarImage,
         cotizacionFormalImage,
-        cotizacionesFormales: [],
-        cotizacionFormalData: [],
-        preliminarCotizaciones: [],
-        preliminarData: [],
-        projectId: String(proyecto._id)
+        ...cotizaciones,
+        projectId: String(proyecto._id),
+        taskId: ultimaTarea?._id ? String(ultimaTarea._id) : null
     };
 };
 
@@ -696,7 +807,20 @@ export const actualizarEstatusPublico = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
         }
 
-        const { estadoProyecto, etapaActual, fechaInicio, fechaEntrega, garantiaInicio, inversion, pagos, seguimientoNota } = req.body || {};
+        const {
+            estadoProyecto,
+            etapaActual,
+            inversion,
+            pagos,
+            seguimientoNota,
+            archivos,
+            cotizacionesFormales,
+            preliminarCotizaciones
+        } = req.body || {};
+
+        const tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+        const incomingArchivos = Array.isArray(archivos) ? archivos : [];
+
         const allowedProjectStates = ['cotizacion', 'aprobado', 'en_produccion', 'instalando', 'completado'];
         if (estadoProyecto !== undefined) {
             const stateMap = {
@@ -720,12 +844,49 @@ export const actualizarEstatusPublico = async (req, res) => {
             }
         }
         if (seguimientoNota !== undefined) proyecto.seguimientoNota = String(seguimientoNota || '').trim();
+
+        if (incomingArchivos.length) {
+            proyecto.archivosPublicos = mergeArchivosByUrl(
+                proyecto.archivosPublicos,
+                incomingArchivos,
+                toProyectoArchivoPublico
+            );
+            proyecto.markModified('archivosPublicos');
+        }
+
         await proyecto.save();
 
-        const tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
         if (tarea) {
             if (etapaActual !== undefined) tarea.etapaActual = String(etapaActual || '').trim();
             if (seguimientoNota !== undefined) tarea.seguimientoNota = String(seguimientoNota || '').trim();
+            if (inversion !== undefined && Number.isFinite(Number(inversion))) {
+                tarea.inversion = Number(inversion);
+            }
+            if (pagos && typeof pagos === 'object') {
+                for (const slot of ['anticipo', 'segundoPago', 'liquidacion']) {
+                    if (pagos[slot] !== undefined) {
+                        tarea.pagos[slot] = pagos[slot];
+                    }
+                }
+                tarea.markModified('pagos');
+            }
+            if (incomingArchivos.length) {
+                const clienteCodigo = String(tarea.clienteId || codigo6 || '').trim();
+                tarea.archivos = mergeArchivosByUrl(
+                    tarea.archivos,
+                    incomingArchivos,
+                    (raw) => toTareaArchivo(raw, clienteCodigo)
+                );
+                tarea.markModified('archivos');
+            }
+            if (cotizacionesFormales !== undefined) {
+                tarea.cotizacionesFormales = asTrackingCotizaciones(cotizacionesFormales);
+                tarea.markModified('cotizacionesFormales');
+            }
+            if (preliminarCotizaciones !== undefined) {
+                tarea.preliminarCotizaciones = asTrackingCotizaciones(preliminarCotizaciones);
+                tarea.markModified('preliminarCotizaciones');
+            }
             if (estadoProyecto !== undefined && String(estadoProyecto).trim().toLowerCase() === 'cliente confirmado') {
                 tarea.followUpStatus = 'confirmado';
             }
