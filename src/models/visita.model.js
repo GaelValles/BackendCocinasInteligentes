@@ -14,13 +14,13 @@ const visitaSchema = new mongoose.Schema({
     },
     correoCliente: {
         type: String,
-        required: true,
+        required: false,
         trim: true,
         lowercase: true
     },
     telefonoCliente: {
         type: String,
-        required: true,
+        required: false,
         trim: true
     },
     ubicacion: {
