@@ -35,8 +35,6 @@ const resolveProyectoByCodigo = async (rawCodigo) => {
     return null;
 };
 
-const TIPOS_PROYECTO = ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'];
-
 const parseContractDate = (value) => {
     if (value === '') return { valid: true, date: null };
     if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -697,11 +695,12 @@ export const eliminarProyecto = async (req, res) => {
 export const actualizarDatosContratoProyecto = async (req, res) => {
     try {
         const rol = String(req.admin?.rol || '').toLowerCase();
-        if (!['admin', 'arquitecto', 'empleado', 'empleado_general', 'ingeniero', 'staff'].includes(rol)) {
+        if (rol !== 'admin') {
             return res.status(403).json({ success: false, message: 'No autorizado para actualizar datos del contrato' });
         }
 
-        if (!normalizeCodigoInput(req.params.codigo)) {
+        const codigo = normalizeCodigoInput(req.params.codigo);
+        if (!codigo) {
             return res.status(400).json({ success: false, message: 'Código de proyecto inválido' });
         }
 
@@ -714,16 +713,22 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
             return res.status(400).json({ success: false, message: 'El cuerpo contiene campos no permitidos' });
         }
 
-        if (Object.prototype.hasOwnProperty.call(body, 'tipo') && !TIPOS_PROYECTO.includes(body.tipo)) {
-            return res.status(400).json({ success: false, message: 'Tipo de proyecto inválido' });
+        let tipo;
+        if (Object.prototype.hasOwnProperty.call(body, 'tipo')) {
+            if (typeof body.tipo !== 'string') {
+                return res.status(400).json({ success: false, message: 'El tipo de proyecto debe ser texto' });
+            }
+            tipo = body.tipo.trim();
+            if (!tipo || tipo.length > 60) {
+                return res.status(400).json({ success: false, message: 'El tipo de proyecto debe tener entre 1 y 60 caracteres' });
+            }
         }
 
-        let proyecto = await resolveProyectoByCodigo(req.params.codigo);
+        let proyecto = await resolveProyectoByCodigo(codigo);
         let tareaParaVincular = null;
 
         // Sin proyecto previo: se crea y se vincula por id a la tarjeta (tarea) del cliente.
         if (!proyecto) {
-            const codigo = normalizeCodigoInput(req.params.codigo);
             tareaParaVincular = await Tarea.findOne({ clienteId: codigo }).sort({ updatedAt: -1 }).lean();
             if (!tareaParaVincular) {
                 return res.status(404).json({
@@ -738,15 +743,15 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
                 nombreCliente,
                 clienteId: codigo,
                 clienteRef: tareaParaVincular.clienteRef || null,
-                tipo: body.tipo || 'Cocina',
+                tipo: tipo || 'Cocina',
                 estado: 'aprobado',
                 presupuestoTotal: Number(tareaParaVincular.inversion) || 0,
                 pagos: tareaParaVincular.pagos || undefined
             });
         }
 
-        if (Object.prototype.hasOwnProperty.call(body, 'tipo')) {
-            proyecto.tipo = body.tipo;
+        if (tipo !== undefined) {
+            proyecto.tipo = tipo;
         }
 
         const hasFechaContrato = Object.prototype.hasOwnProperty.call(body, 'fechaContrato');
@@ -777,12 +782,19 @@ export const actualizarDatosContratoProyecto = async (req, res) => {
 
         await proyecto.save();
 
-        if (tareaParaVincular) {
+        if (!tareaParaVincular) {
+            tareaParaVincular = await Tarea.findOne({ clienteId: codigo }).sort({ updatedAt: -1 }).lean();
+        }
+
+        if (tareaParaVincular
+            && (!tareaParaVincular.proyectoId || String(tareaParaVincular.proyectoId) === String(proyecto._id))) {
             await Tarea.updateOne(
                 { _id: tareaParaVincular._id },
                 { $set: { proyectoId: String(proyecto._id), nombreProyecto: proyecto.nombre } }
             );
-            await upsertTrackingAccessFromProyecto(proyecto._id);
+            if (!tareaParaVincular.proyectoId) {
+                await upsertTrackingAccessFromProyecto(proyecto._id);
+            }
         }
 
         return res.json({ success: true, data: proyecto });

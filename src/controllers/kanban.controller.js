@@ -93,7 +93,7 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = nul
     assignedToIds: item.asignadoA || [],
     assignedTo: item.asignadoANombre || [],
     nombreProyecto: item.nombreProyecto || '',
-    proyectoId: item.proyectoId || null,
+    proyectoId: item.proyectoId ? String(item.proyectoId) : null,
     tipo: proyecto?.tipo || null,
     fechaContrato: toISODate(proyecto?.fechaContrato),
     fechaEntrega: toISODate(proyecto?.fechaEntrega),

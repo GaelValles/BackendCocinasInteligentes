@@ -57,7 +57,8 @@ const proyectoSchema = new mongoose.Schema({
     },
     tipo: {
         type: String,
-        enum: ['Cocina', 'Closet', 'vestidor', 'Mueble para el baño'],
+        trim: true,
+        maxlength: 60,
         required: true
     },
     fechaContrato: {
