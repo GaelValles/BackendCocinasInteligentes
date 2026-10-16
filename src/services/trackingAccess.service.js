@@ -110,6 +110,11 @@ export const upsertTrackingAccessFromProyecto = async (proyectoLike) => {
     });
 };
 
+const getClienteCodigo6FromTarea = (tarea) => {
+    const codigo6 = first6(tarea?.clienteId || '');
+    return hasLength6(codigo6) ? codigo6 : null;
+};
+
 export const upsertTrackingAccessFromTarea = async (tareaLike) => {
     if (!tareaLike) return null;
 
@@ -119,8 +124,8 @@ export const upsertTrackingAccessFromTarea = async (tareaLike) => {
 
     if (!tarea) return null;
 
-    const codigo6 = getCodigo6FromTarea(tarea);
-    if (!hasLength6(codigo6)) return null;
+    const codigo6 = getClienteCodigo6FromTarea(tarea);
+    if (!codigo6) return null;
 
     const projectId = mongoose.Types.ObjectId.isValid(tarea.proyectoId)
         ? new mongoose.Types.ObjectId(tarea.proyectoId)

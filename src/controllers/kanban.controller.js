@@ -126,6 +126,7 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = nul
     clientId: clienteIdResolved,
     codigoCliente: clienteIdResolved,
     codigo: clienteIdResolved,
+    codigoProyecto: clienteIdResolved,
     clienteRef: clienteRefResolved,
     cliente: {
         _id: clienteRefResolved || null,

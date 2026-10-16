@@ -223,7 +223,11 @@ const actualizarTareaBaseSchema = z.object({
     inversion: inversionPayloadSchema,
     inversionTotal: inversionPayloadSchema,
     seguimientoNota: z.string().optional(),
-    notaSeguimiento: z.string().optional()
+    notaSeguimiento: z.string().optional(),
+    codigoProyecto: z.string().optional(),
+    codigo: z.string().optional(),
+    clienteId: z.string().optional(),
+    codigoCliente: z.string().optional()
 });
 
 export const actualizarTareaSchema = actualizarTareaBaseSchema.refine(data => Object.keys(data).length > 0, {

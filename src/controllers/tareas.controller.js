@@ -945,6 +945,7 @@ const mapTask = (tarea, baseUrl = '') => {
     clientId: clienteIdResolved,
     codigoCliente: clienteIdResolved,
     codigo: clienteIdResolved,
+    codigoProyecto: clienteIdResolved,
     cliente: {
         _id: tarea.clienteRef || null,
         id: tarea.clienteRef || null,
@@ -1257,7 +1258,13 @@ export const crearTarea = async (req, res) => {
             return res.status(400).json({ success: false, message: notaSeguimientoResolved.message });
         }
 
-        const assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds ?? assignedTo);
+        let assignedIds = normalizeAssignedIds(asignadoA ?? assignedToIds ?? assignedTo);
+        if (isOperativo(req) && req.admin?._id) {
+            const creatorId = String(req.admin._id);
+            if (!assignedIds.includes(creatorId)) {
+                assignedIds = [creatorId, ...assignedIds];
+            }
+        }
         const assignedUsers = await resolveAssignedUsersForCreate(assignedIds, req);
         if (assignedUsers.error) {
             return res.status(404).json({ success: false, message: assignedUsers.error });
@@ -1414,7 +1421,11 @@ export const actualizarTarea = async (req, res) => {
             inversion,
             inversionTotal,
             seguimientoNota,
-            notaSeguimiento
+            notaSeguimiento,
+            codigoProyecto,
+            codigo,
+            clienteId: clienteIdBody,
+            codigoCliente
         } = req.body || {};
 
         const incomingFields = [
@@ -1464,7 +1475,11 @@ export const actualizarTarea = async (req, res) => {
             inversion,
             inversionTotal,
             seguimientoNota,
-            notaSeguimiento
+            notaSeguimiento,
+            codigoProyecto,
+            codigo,
+            clienteIdBody,
+            codigoCliente
         ];
 
         if (!incomingFields.some((value) => value !== undefined)) {
@@ -1663,6 +1678,21 @@ export const actualizarTarea = async (req, res) => {
         if (projectResult) {
             tarea.proyectoId = projectResult.proyectoId;
             if (nombreProyectoNormalizado === undefined) tarea.nombreProyecto = projectResult.nombreProyecto || tarea.nombreProyecto;
+        }
+
+        const preferredClienteCodigoUpdate = normalizeClienteCodigo(
+            codigoProyecto ?? clienteIdBody ?? codigo ?? codigoCliente ?? ''
+        );
+        if (codigoProyecto !== undefined || clienteIdBody !== undefined || codigo !== undefined || codigoCliente !== undefined) {
+            if (preferredClienteCodigoUpdate && !isValidClienteCodigo(preferredClienteCodigoUpdate)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'codigoProyecto/codigo/clienteId invalido. Debe ser alfanumerico de 6 caracteres (A-Z, 2-9)'
+                });
+            }
+            if (preferredClienteCodigoUpdate) {
+                tarea.clienteId = preferredClienteCodigoUpdate;
+            }
         }
 
         if (normalizedFollowUpStatus === 'pendiente' && tarea.etapa === 'contrato' && followUpEnteredAt === undefined) {
