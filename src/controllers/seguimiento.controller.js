@@ -107,6 +107,55 @@ const mapArchivos = (archivos = []) => {
 };
 
 const TRACKING_RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
+const TRACKING_DESIGN_TYPE = 'diseno';
+
+const isDisenoArchivo = (archivo = {}) => {
+    const tipo = String(archivo?.tipo || archivo?.type || '').trim().toLowerCase();
+    return tipo === TRACKING_DESIGN_TYPE || tipo === 'diseño';
+};
+
+const extractDisenoArchivosFromTarea = (archivos = []) => (
+    (Array.isArray(archivos) ? archivos : []).filter(isDisenoArchivo)
+);
+
+const loadClientDesignArchivos = async (clienteCodigo = '') => {
+    const codigo = String(clienteCodigo || '').trim().toUpperCase();
+    if (!codigo) return [];
+    return ClienteArchivo.find({ clienteId: codigo, tipo: TRACKING_DESIGN_TYPE })
+        .sort({ createdAt: -1 })
+        .lean();
+};
+
+const buildSeguimientoArchivosList = async ({
+    archivosPublicos = [],
+    proyectoArchivos = [],
+    tareaArchivos = [],
+    ultimaTareaArchivos = [],
+    clienteCodigo = '',
+    clientReceipts: prefetchedReceipts = null
+} = {}) => {
+    const codigo = String(clienteCodigo || '').trim().toUpperCase();
+    const clientReceipts = prefetchedReceipts ?? (codigo
+        ? await ClienteArchivo.find({ clienteId: codigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
+            .sort({ createdAt: -1 })
+            .lean()
+        : []);
+    const clientDesign = await loadClientDesignArchivos(codigo);
+    const disenoFromTasks = extractDisenoArchivosFromTarea([
+        ...(Array.isArray(tareaArchivos) ? tareaArchivos : []),
+        ...(Array.isArray(ultimaTareaArchivos) ? ultimaTareaArchivos : [])
+    ]);
+
+    return mergeTrackingFiles(
+        archivosPublicos,
+        proyectoArchivos,
+        tareaArchivos,
+        ultimaTareaArchivos,
+        disenoFromTasks,
+        clientDesign,
+        clientReceipts
+    );
+};
 
 const PROYECTO_PUBLIC_FILE_TYPES = new Set([
     'jpg', 'jpeg', 'pdf', 'png', 'webp', 'cotizacion_formal', 'hoja_taller',
@@ -219,10 +268,16 @@ const normalizeTrackingFile = (archivo = {}) => {
         tipo = inferFileTypeFromName(nombre, 'archivo');
     }
 
+    const nivelRaw = archivo?.nivel;
+    const nivel = ['preliminar', 'final'].includes(String(nivelRaw || '').toLowerCase())
+        ? String(nivelRaw).toLowerCase()
+        : (nivelRaw ?? null);
+
     return {
         id: archivo?._id ? String(archivo._id) : String(archivo?.id || `${nombre || 'archivo'}-${archivo?.createdAt || Date.now()}`),
         nombre,
         tipo,
+        nivel,
         url,
         src: url,
         name: nombre
@@ -482,7 +537,11 @@ const buildProjectSnapshot = async (access) => {
 
         const kanbanStage = tarea.etapa || '';
         const kanbanFollowUpStatus = tarea.followUpStatus || 'pendiente';
-        const archivos = mergeTrackingFiles(tarea.archivos, clientReceipts);
+        const archivos = await buildSeguimientoArchivosList({
+            tareaArchivos: tarea.archivos,
+            clienteCodigo: codigoClienteIdentidad,
+            clientReceipts
+        });
         const cotizaciones = resolveTrackingCotizaciones(tarea);
         const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
         const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
@@ -535,7 +594,13 @@ const buildProjectSnapshot = async (access) => {
         ...buildClientReceiptIndex(clientReceipts)
     };
 
-    const archivos = mergeTrackingFiles(proyecto.archivosPublicos, proyecto.archivos, ultimaTarea?.archivos, clientReceipts);
+    const archivos = await buildSeguimientoArchivosList({
+        archivosPublicos: proyecto.archivosPublicos,
+        proyectoArchivos: proyecto.archivos,
+        ultimaTareaArchivos: ultimaTarea?.archivos,
+        clienteCodigo: codigoClienteIdentidad,
+        clientReceipts
+    });
     const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
     const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
     const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
@@ -710,7 +775,12 @@ export const getArchivosSeguimiento = async (req, res) => {
                     .lean()
                 : [];
 
-            return res.status(200).json({ success: true, data: mergeTrackingFiles(tarea.archivos, clientReceipts) });
+            const archivos = await buildSeguimientoArchivosList({
+                tareaArchivos: tarea.archivos,
+                clienteCodigo,
+                clientReceipts
+            });
+            return res.status(200).json({ success: true, data: archivos });
         }
 
         const ultimaTarea = await Tarea.findOne({ proyectoId: String(proyecto._id) })
@@ -724,9 +794,17 @@ export const getArchivosSeguimiento = async (req, res) => {
                 .lean()
             : [];
 
+        const archivos = await buildSeguimientoArchivosList({
+            archivosPublicos: proyecto.archivosPublicos,
+            proyectoArchivos: proyecto.archivos,
+            ultimaTareaArchivos: ultimaTarea?.archivos,
+            clienteCodigo,
+            clientReceipts
+        });
+
         return res.status(200).json({
             success: true,
-            data: mergeTrackingFiles(proyecto.archivosPublicos, proyecto.archivos, ultimaTarea?.archivos, clientReceipts)
+            data: archivos
         });
     } catch (error) {
         console.error('Error al obtener archivos de seguimiento:', error);

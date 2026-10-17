@@ -147,6 +147,9 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = nul
             id: archivo?.id || null,
             nombre: archivo?.nombre || '',
             tipo: archivo?.tipo || 'otro',
+            nivel: ['preliminar', 'final'].includes(String(archivo?.nivel || '').toLowerCase())
+                ? String(archivo.nivel).toLowerCase()
+                : (archivo?.nivel ?? null),
             url: normalizeFileUrl(archivo?.url || '', baseUrl)
         }))
         : [],

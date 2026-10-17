@@ -1358,11 +1358,8 @@ export const actualizarTarea = async (req, res) => {
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         const { id } = req.params;
 
-        if (!req.admin || req.admin.rol !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                message: 'Solo un admin puede editar tareas'
-            });
+        if (!req.admin) {
+            return res.status(401).json({ success: false, message: 'No autenticado' });
         }
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -1372,6 +1369,14 @@ export const actualizarTarea = async (req, res) => {
         const tarea = await Tarea.findById(id);
         if (!tarea) {
             return res.status(404).json({ success: false, message: 'Tarea no encontrada' });
+        }
+
+        const isAdmin = req.admin.rol === 'admin';
+        if (!isAdmin && !canViewOrEditTask(req, tarea)) {
+            return res.status(403).json({
+                success: false,
+                message: 'No tienes permiso para editar esta tarea'
+            });
         }
 
         const {
@@ -1645,21 +1650,35 @@ export const actualizarTarea = async (req, res) => {
         if (followUpEnteredAt !== undefined) tarea.followUpEnteredAt = followUpEnteredAt;
         if (citaStarted !== undefined) tarea.citaStarted = Boolean(citaStarted);
         if (citaFinished !== undefined) tarea.citaFinished = Boolean(citaFinished);
-        tarea.designApprovedByAdmin = visitState.value.aprobadaPorAdmin;
-        tarea.designApprovedByClient = visitState.value.aprobadaPorCliente;
+        const designVisitTouched = designApprovedByAdmin !== undefined
+            || designApprovedByClient !== undefined
+            || visita !== undefined
+            || visitScheduledAt !== undefined;
+        if (designVisitTouched) {
+            if (designApprovedByAdmin !== undefined) {
+                tarea.designApprovedByAdmin = Boolean(designApprovedByAdmin);
+            } else {
+                tarea.designApprovedByAdmin = visitState.value.aprobadaPorAdmin;
+            }
+            if (designApprovedByClient !== undefined) {
+                tarea.designApprovedByClient = Boolean(designApprovedByClient);
+            } else {
+                tarea.designApprovedByClient = visitState.value.aprobadaPorCliente;
+            }
+            tarea.visitScheduledAt = visitState.value.fechaProgramada ?? null;
+            tarea.visita = {
+                fechaProgramada: visitState.value.fechaProgramada ?? null,
+                aprobadaPorAdmin: tarea.designApprovedByAdmin,
+                aprobadaPorCliente: tarea.designApprovedByClient,
+                actualizadaEn: visitState.value.actualizadaEn
+            };
+        }
         if (clientApprovalRequested) {
             tarea.etapa = 'cotizacion';
             tarea.estado = 'pendiente';
             tarea.citaStarted = false;
             tarea.citaFinished = false;
         }
-        tarea.visitScheduledAt = visitState.value.fechaProgramada ?? null;
-        tarea.visita = {
-            fechaProgramada: visitState.value.fechaProgramada ?? null,
-            aprobadaPorAdmin: visitState.value.aprobadaPorAdmin,
-            aprobadaPorCliente: visitState.value.aprobadaPorCliente,
-            actualizadaEn: visitState.value.actualizadaEn
-        };
         if (resolvedSourceType !== undefined) tarea.sourceType = resolvedSourceType;
         if (resolvedSourceId !== undefined) tarea.sourceId = resolvedSourceId ? String(resolvedSourceId) : null;
         if (resolvedSourceType === 'cita') tarea.sourceCitaId = resolvedSourceId ? String(resolvedSourceId) : undefined;
