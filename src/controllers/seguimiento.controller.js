@@ -5,6 +5,8 @@ import Tarea from '../models/tarea.model.js';
 import TrackingAccess from '../models/trackingAccess.model.js';
 import ClienteArchivo from '../models/clienteArchivo.model.js';
 import ClienteIdentidad from '../models/clienteIdentidad.model.js';
+import Levantamiento from '../models/levantamiento.model.js';
+import Cotizacion from '../models/cotizacion.model.js';
 import {
     normalizeCodigoInput,
     findEnabledAccessByCodigo6,
@@ -107,54 +109,158 @@ const mapArchivos = (archivos = []) => {
 };
 
 const TRACKING_RECEIPT_TYPES = new Set(['recibo_1', 'recibo_2', 'recibo_3']);
-const TRACKING_DESIGN_TYPE = 'diseno';
 
-const isDisenoArchivo = (archivo = {}) => {
-    const tipo = String(archivo?.tipo || archivo?.type || '').trim().toLowerCase();
-    return tipo === TRACKING_DESIGN_TYPE || tipo === 'diseño';
+const HARDCODED_TRACKING_FILE_NAME = 'Levantamiento Preliminar.pdf';
+const HARDCODED_TRACKING_FILE_ID = 'preliminar-1';
+
+const isHardcodedTrackingFileRef = (file = {}) => {
+    const nombre = String(file?.nombre ?? '').trim();
+    const name = String(file?.name ?? '').trim();
+    const id = String(file?.id ?? file?._id ?? '').trim();
+    return (
+        nombre === HARDCODED_TRACKING_FILE_NAME
+        || name === HARDCODED_TRACKING_FILE_NAME
+        || id === HARDCODED_TRACKING_FILE_ID
+    );
 };
 
-const extractDisenoArchivosFromTarea = (archivos = []) => (
-    (Array.isArray(archivos) ? archivos : []).filter(isDisenoArchivo)
+const excludeHardcodedTrackingFiles = (files = []) => (
+    (Array.isArray(files) ? files : []).filter((f) => !isHardcodedTrackingFileRef(f))
 );
 
-const loadClientDesignArchivos = async (clienteCodigo = '') => {
+const isRealTrackingArchivo = (archivo = {}) => {
+    if (isHardcodedTrackingFileRef(archivo)) return false;
+    const url = String(archivo?.url || archivo?.src || '').trim();
+    return url.length > 0 && url !== '#';
+};
+
+const filterRealTrackingArchivos = (archivos = []) => (
+    excludeHardcodedTrackingFiles(
+        (Array.isArray(archivos) ? archivos : []).filter(isRealTrackingArchivo)
+    )
+);
+
+const loadClienteArchivosForTracking = async (clienteCodigo = '') => {
     const codigo = String(clienteCodigo || '').trim().toUpperCase();
     if (!codigo) return [];
-    return ClienteArchivo.find({ clienteId: codigo, tipo: TRACKING_DESIGN_TYPE })
+    return ClienteArchivo.find({ clienteId: codigo })
         .sort({ createdAt: -1 })
         .lean();
 };
 
 const buildSeguimientoArchivosList = async ({
-    archivosPublicos = [],
-    proyectoArchivos = [],
     tareaArchivos = [],
-    ultimaTareaArchivos = [],
-    clienteCodigo = '',
-    clientReceipts: prefetchedReceipts = null
+    clienteCodigo = ''
 } = {}) => {
-    const codigo = String(clienteCodigo || '').trim().toUpperCase();
-    const clientReceipts = prefetchedReceipts ?? (codigo
-        ? await ClienteArchivo.find({ clienteId: codigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
-            .sort({ createdAt: -1 })
-            .lean()
-        : []);
-    const clientDesign = await loadClientDesignArchivos(codigo);
-    const disenoFromTasks = extractDisenoArchivosFromTarea([
-        ...(Array.isArray(tareaArchivos) ? tareaArchivos : []),
-        ...(Array.isArray(ultimaTareaArchivos) ? ultimaTareaArchivos : [])
-    ]);
-
-    return mergeTrackingFiles(
-        archivosPublicos,
-        proyectoArchivos,
-        tareaArchivos,
-        ultimaTareaArchivos,
-        disenoFromTasks,
-        clientDesign,
-        clientReceipts
+    const clienteArchivos = await loadClienteArchivosForTracking(clienteCodigo);
+    const merged = mergeTrackingFiles(
+        filterRealTrackingArchivos(tareaArchivos),
+        filterRealTrackingArchivos(clienteArchivos)
     );
+    return excludeHardcodedTrackingFiles(merged);
+};
+
+const parseDeliveryWeeksRangeFromLabel = (label = '') => {
+    const s = String(label || '').trim();
+    if (!s || s === '—') return null;
+
+    const rangeMatch = s.match(/(\d+)\s+a\s+(\d+)\s+semanas/i);
+    if (rangeMatch) {
+        const a = Number.parseInt(rangeMatch[1] ?? '', 10);
+        const b = Number.parseInt(rangeMatch[2] ?? '', 10);
+        if (Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) {
+            return { min: Math.min(a, b), max: Math.max(a, b) };
+        }
+    }
+
+    const singleMatch = s.match(/(\d+)\s+semanas/i);
+    if (singleMatch) {
+        const n = Number.parseInt(singleMatch[1] ?? '', 10);
+        if (n > 0) return { min: n, max: n };
+    }
+
+    return null;
+};
+
+const collectPreliminarEntriesFromTarea = (tarea) => {
+    const entries = [];
+    const pushEntry = (value) => {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            entries.push(value);
+        }
+    };
+
+    for (const item of asTrackingCotizaciones(tarea?.preliminarCotizaciones)) {
+        pushEntry(item);
+    }
+    pushEntry(tarea?.preliminarData);
+
+    return entries;
+};
+
+const extractDeliveryEstimateLabelFromTarea = (tarea) => {
+    const formalEntries = asTrackingCotizaciones(tarea?.cotizacionesFormales);
+    for (const entry of formalEntries) {
+        const dateLabel = String(entry?.date || '').trim();
+        if (parseDeliveryWeeksRangeFromLabel(dateLabel)) return dateLabel;
+    }
+
+    for (const entry of collectPreliminarEntriesFromTarea(tarea)) {
+        const dateLabel = String(entry?.date || '').trim();
+        if (parseDeliveryWeeksRangeFromLabel(dateLabel)) return dateLabel;
+
+        const rangeLabel = String(entry?.rangeLabel || '').trim();
+        if (parseDeliveryWeeksRangeFromLabel(rangeLabel)) return rangeLabel;
+    }
+
+    for (const entry of collectPreliminarEntriesFromTarea(tarea)) {
+        const dateLabel = String(entry?.date || '').trim();
+        if (dateLabel && dateLabel !== '—' && dateLabel.toLowerCase() !== 'por definir') {
+            return dateLabel;
+        }
+    }
+
+    return '';
+};
+
+const addCalendarDays = (baseDate, days) => {
+    const next = new Date(baseDate.getTime());
+    next.setDate(next.getDate() + days);
+    return next;
+};
+
+const formatMonthYearEs = (value) => {
+    const date = toDateOrNull(value);
+    if (!date) return '';
+    const formatted = new Intl.DateTimeFormat('es-MX', {
+        month: 'long',
+        year: 'numeric'
+    }).format(date);
+    return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+};
+
+const resolveFechaEntregaForTracking = ({ proyecto, tarea } = {}) => {
+    const manualEntrega = toDateOrNull(proyecto?.fechaEntrega);
+    if (manualEntrega) {
+        return formatDateSimple(manualEntrega) || formatMonthYearEs(manualEntrega);
+    }
+
+    const estimateLabel = extractDeliveryEstimateLabelFromTarea(tarea);
+    const weeksRange = parseDeliveryWeeksRangeFromLabel(estimateLabel);
+    const fechaInicio = toDateOrNull(proyecto?.fechaContrato)
+        || toDateOrNull(proyecto?.createdAt)
+        || toDateOrNull(tarea?.createdAt);
+
+    if (weeksRange && fechaInicio) {
+        const targetDate = addCalendarDays(fechaInicio, weeksRange.max * 7);
+        return formatMonthYearEs(targetDate);
+    }
+
+    if (estimateLabel) {
+        return estimateLabel;
+    }
+
+    return 'Por definir';
 };
 
 const PROYECTO_PUBLIC_FILE_TYPES = new Set([
@@ -331,6 +437,29 @@ const buildClientReceiptIndex = (archivos = []) => {
     return index;
 };
 
+const TIMELINE_STEPS_TRACKING = [
+    'Diseño Aprobado',
+    'Materiales en Taller',
+    'Corte CNC',
+    'Ensamble',
+    'Instalación Final'
+];
+
+const ESTADO_PROYECTO_PUBLICO = {
+    EN_PROCESO: 'Cliente en proceso',
+    CONFIRMADO: 'Cliente confirmado',
+    ENTREGADO: 'Proyecto entregado'
+};
+
+const PROYECTO_ESTADOS_CONFIRMADOS = new Set(['aprobado', 'en_produccion', 'instalando', 'completado']);
+
+const normalizePagoSlot = (slot = {}) => ({
+    amount: Math.max(0, Math.round(Number(slot?.amount) || 0)),
+    date: String(slot?.date ?? ''),
+    receiptLabel: String(slot?.receiptLabel || 'Ver recibo'),
+    receiptImage: String(slot?.receiptImage ?? '')
+});
+
 const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
     const defaultDto = {
         amount: 0,
@@ -358,7 +487,7 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
                 ? proyecto?.segundoPago
                 : proyecto?.liquidacion);
 
-        out[slot] = {
+        out[slot] = normalizePagoSlot({
             amount: Number.isFinite(Number(taskSlot?.amount))
                 ? Number(taskSlot.amount)
                 : (Number.isFinite(Number(projectSlot?.amount))
@@ -367,24 +496,187 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
             date: String(taskSlot?.date || projectSlot?.date || defaultDto.date),
             receiptLabel: String(taskSlot?.receiptLabel || projectSlot?.receiptLabel || defaultDto.receiptLabel),
             receiptImage: String(taskSlot?.receiptImage || projectSlot?.receiptImage || fallbackReceipt || defaultDto.receiptImage)
-        };
+        });
     }
 
-    return out;
+    return {
+        anticipo: out.anticipo,
+        segundoPago: out.segundoPago,
+        liquidacion: out.liquidacion
+    };
+};
+
+const pickInversionAmountFromCotizacionEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return 0;
+    const candidates = [
+        entry.total,
+        entry.finalPrice,
+        entry.precioEstimado,
+        entry.inversion,
+        entry.inversionTotal,
+        entry.subtotal
+    ];
+    for (const value of candidates) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    const levantamiento = entry.levantamiento;
+    if (levantamiento && typeof levantamiento === 'object') {
+        const fromLevantamiento = Number(levantamiento.precioEstimado);
+        if (Number.isFinite(fromLevantamiento) && fromLevantamiento > 0) return fromLevantamiento;
+    }
+    return 0;
 };
 
 const resolveInversionForTracking = ({ proyecto, tarea } = {}) => {
     const inversionTarea = Number(tarea?.inversion);
     if (Number.isFinite(inversionTarea) && inversionTarea > 0) {
-        return inversionTarea;
+        return Math.round(inversionTarea);
     }
 
     const inversionProyecto = Number(proyecto?.presupuestoTotal);
     if (Number.isFinite(inversionProyecto) && inversionProyecto > 0) {
-        return inversionProyecto;
+        return Math.round(inversionProyecto);
     }
 
-    return Number.isFinite(inversionTarea) ? inversionTarea : 0;
+    const cotizacionesFormales = asTrackingCotizaciones(tarea?.cotizacionesFormales);
+    for (const entry of cotizacionesFormales) {
+        const amount = pickInversionAmountFromCotizacionEntry(entry);
+        if (amount > 0) return Math.round(amount);
+    }
+
+    const preliminarCotizaciones = asTrackingCotizaciones(tarea?.preliminarCotizaciones);
+    for (const entry of preliminarCotizaciones) {
+        const amount = pickInversionAmountFromCotizacionEntry(entry);
+        if (amount > 0) return Math.round(amount);
+    }
+
+    const legacyFormal = pickInversionAmountFromCotizacionEntry(tarea?.cotizacionFormalData);
+    if (legacyFormal > 0) return Math.round(legacyFormal);
+
+    const legacyPreliminar = pickInversionAmountFromCotizacionEntry(tarea?.preliminarData);
+    if (legacyPreliminar > 0) return Math.round(legacyPreliminar);
+
+    return 0;
+};
+
+const resolveInversionFromLevantamientoRef = async (levantamientoId) => {
+    if (!levantamientoId || !mongoose.Types.ObjectId.isValid(String(levantamientoId))) {
+        return 0;
+    }
+    const doc = await Levantamiento.findById(levantamientoId).select('precioEstimado').lean();
+    const amount = Number(doc?.precioEstimado);
+    return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
+};
+
+const resolveInversionFromCotizacionRef = async (cotizacionId) => {
+    if (!cotizacionId || !mongoose.Types.ObjectId.isValid(String(cotizacionId))) {
+        return 0;
+    }
+    const doc = await Cotizacion.findById(cotizacionId).select('finalPrice').lean();
+    const amount = Number(doc?.finalPrice);
+    return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
+};
+
+const isClienteConfirmadoSeguimiento = ({
+    followUpStatus,
+    kanbanStage,
+    proyectoEstado
+} = {}) => {
+    if (followUpStatus === 'confirmado') return true;
+    const stage = String(kanbanStage || '');
+    if (stage === 'contrato' && followUpStatus !== 'inactivo') return true;
+    const estado = String(proyectoEstado || '').trim().toLowerCase();
+    return PROYECTO_ESTADOS_CONFIRMADOS.has(estado);
+};
+
+const resolveKanbanFollowUpStatusForTracking = ({
+    followUpStatus,
+    kanbanStage,
+    proyectoEstado
+} = {}) => {
+    const raw = String(followUpStatus || 'pendiente');
+    if (isClienteConfirmadoSeguimiento({ followUpStatus: raw, kanbanStage, proyectoEstado })) {
+        return 'confirmado';
+    }
+    return raw;
+};
+
+const normalizeEtapaActualForTracking = (raw) => {
+    const value = String(raw || '').trim();
+    if (TIMELINE_STEPS_TRACKING.includes(value)) return value;
+
+    const lower = value.toLowerCase();
+    const aliasMap = {
+        disenos: 'Diseño Aprobado',
+        cotizacion: 'Diseño Aprobado',
+        contrato: 'Diseño Aprobado',
+        citas: 'Diseño Aprobado',
+        'cotización en proceso': 'Diseño Aprobado',
+        'cotizacion en proceso': 'Diseño Aprobado',
+        'materiales en taller': 'Materiales en Taller',
+        'corte cnc': 'Corte CNC',
+        ensamble: 'Ensamble',
+        'instalación final': 'Instalación Final',
+        'instalacion final': 'Instalación Final'
+    };
+    if (aliasMap[lower]) return aliasMap[lower];
+
+    for (const step of TIMELINE_STEPS_TRACKING) {
+        if (step.toLowerCase() === lower) return step;
+    }
+
+    return TIMELINE_STEPS_TRACKING[0];
+};
+
+const resolveEstadoProyectoPublico = ({
+    proyecto,
+    kanbanFollowUpStatus,
+    kanbanStage
+} = {}) => {
+    const estadoInterno = String(proyecto?.estado || '').trim().toLowerCase();
+    if (estadoInterno === 'completado') {
+        return ESTADO_PROYECTO_PUBLICO.ENTREGADO;
+    }
+    if (isClienteConfirmadoSeguimiento({
+        followUpStatus: kanbanFollowUpStatus,
+        kanbanStage,
+        proyectoEstado: estadoInterno
+    })) {
+        return ESTADO_PROYECTO_PUBLICO.CONFIRMADO;
+    }
+    return ESTADO_PROYECTO_PUBLICO.EN_PROCESO;
+};
+
+const resolveGarantiaInicioForTracking = ({
+    estadoProyectoPublico,
+    proyecto,
+    tarea
+} = {}) => {
+    if (estadoProyectoPublico !== ESTADO_PROYECTO_PUBLICO.ENTREGADO) {
+        return '';
+    }
+    const dateSource = proyecto?.fechaEntrega ?? proyecto?.updatedAt ?? tarea?.updatedAt;
+    return formatDateISO(dateSource);
+};
+
+const buildTrackingFinancials = async ({ proyecto, tarea, receiptIndex }) => {
+    const pagos = buildPagosDto({ proyecto, tarea, receiptIndex });
+    let inversion = resolveInversionForTracking({ proyecto, tarea });
+    if (inversion === 0 && proyecto) {
+        const fromFormal = await resolveInversionFromCotizacionRef(proyecto.cotizacion);
+        if (fromFormal > 0) inversion = fromFormal;
+    }
+    if (inversion === 0 && proyecto) {
+        const fromLevantamiento = await resolveInversionFromLevantamientoRef(proyecto.levantamiento);
+        if (fromLevantamiento > 0) inversion = fromLevantamiento;
+    }
+    const { totalPagado } = calculatePagosSummary(pagos);
+    if (inversion === 0 && totalPagado > 0) {
+        inversion = Math.round(totalPagado);
+    }
+    const saldoPendiente = Math.max(inversion - totalPagado, 0);
+    return { pagos, inversion, totalPagado, saldoPendiente };
 };
 
 const calculatePagosSummary = (pagos = {}) => {
@@ -530,39 +822,57 @@ const buildProjectSnapshot = async (access) => {
         };
 
         const clienteNombre = tarea.cliente?.nombre || tarea.cita?.nombreCliente || 'Cliente';
-        const pagos = buildPagosDto({ tarea, receiptIndex });
-        const inversion = resolveInversionForTracking({ tarea });
-        const { totalPagado } = calculatePagosSummary(pagos);
-        const saldoPendiente = Math.max(inversion - totalPagado, 0);
+        const { pagos, inversion, totalPagado, saldoPendiente } = await buildTrackingFinancials({
+            tarea,
+            receiptIndex
+        });
 
         const kanbanStage = tarea.etapa || '';
-        const kanbanFollowUpStatus = tarea.followUpStatus || 'pendiente';
+        const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
+            followUpStatus: tarea.followUpStatus,
+            kanbanStage,
+            proyectoEstado: null
+        });
+        const isProspect = !isClienteConfirmadoSeguimiento({
+            followUpStatus: kanbanFollowUpStatus,
+            kanbanStage,
+            proyectoEstado: null
+        });
+        const etapaActual = normalizeEtapaActualForTracking(tarea.etapaActual || tarea.etapa);
+        const estadoProyecto = resolveEstadoProyectoPublico({
+            kanbanFollowUpStatus,
+            kanbanStage
+        });
+        const garantiaInicio = resolveGarantiaInicioForTracking({
+            estadoProyectoPublico: estadoProyecto,
+            tarea
+        });
         const archivos = await buildSeguimientoArchivosList({
             tareaArchivos: tarea.archivos,
-            clienteCodigo: codigoClienteIdentidad,
-            clientReceipts
+            clienteCodigo: codigoClienteIdentidad
         });
         const cotizaciones = resolveTrackingCotizaciones(tarea);
         const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
         const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
+        const fechaEntrega = resolveFechaEntregaForTracking({ tarea });
 
         return {
             codigo: codigoClienteIdentidad,
             cliente: clienteNombre,
             nombre: clienteNombre,
             titulo: tarea.nombreProyecto || 'Proyecto de cocina',
-            isProspect: true,
+            isProspect,
             kanbanStage,
             kanbanFollowUpStatus,
             inversion,
             inversionTotal: inversion,
-            fechaInicio: formatDateSimple(tarea.createdAt),
-            fechaEntrega: formatDateSimple(tarea.updatedAt),
-            garantiaInicio: formatDateISO(tarea.updatedAt),
-            estadoProyecto: tarea.estado || 'pendiente',
-            etapaActual: tarea.etapaActual || tarea.etapa || 'Diseño Aprobado',
-            timelineActual: tarea.etapaActual || tarea.etapa || 'Diseño Aprobado',
-            followUpStatus: tarea.followUpStatus || 'pendiente',
+            fechaInicio: formatDateSimple(tarea.createdAt) || 'Por definir',
+            fechaEntrega,
+            garantiaInicio,
+            estadoProyecto,
+            etapaActual,
+            timelineActual: etapaActual,
+            followUpStatus: kanbanFollowUpStatus,
             pagos,
             totalPagado,
             saldoPendiente,
@@ -595,24 +905,42 @@ const buildProjectSnapshot = async (access) => {
     };
 
     const archivos = await buildSeguimientoArchivosList({
-        archivosPublicos: proyecto.archivosPublicos,
-        proyectoArchivos: proyecto.archivos,
-        ultimaTareaArchivos: ultimaTarea?.archivos,
-        clienteCodigo: codigoClienteIdentidad,
-        clientReceipts
+        tareaArchivos: ultimaTarea?.archivos,
+        clienteCodigo: codigoClienteIdentidad
     });
     const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
     const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
     const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
-    const pagos = buildPagosDto({ proyecto, tarea: ultimaTarea, receiptIndex });
-    const inversion = resolveInversionForTracking({ proyecto, tarea: ultimaTarea });
-    const { totalPagado } = calculatePagosSummary(pagos);
-    const saldoPendiente = Math.max(inversion - totalPagado, 0);
+    const { pagos, inversion, totalPagado, saldoPendiente } = await buildTrackingFinancials({
+        proyecto,
+        tarea: ultimaTarea,
+        receiptIndex
+    });
 
     const kanbanStage = ultimaTarea?.etapa || '';
-    const kanbanFollowUpStatus = ultimaTarea?.followUpStatus || 'pendiente';
-    const isProspect = !(kanbanFollowUpStatus === 'confirmado'
-        || (kanbanStage === 'contrato' && kanbanFollowUpStatus !== 'inactivo'));
+    const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
+        followUpStatus: ultimaTarea?.followUpStatus,
+        kanbanStage,
+        proyectoEstado: proyecto?.estado
+    });
+    const isProspect = !isClienteConfirmadoSeguimiento({
+        followUpStatus: kanbanFollowUpStatus,
+        kanbanStage,
+        proyectoEstado: proyecto?.estado
+    });
+    const etapaActual = normalizeEtapaActualForTracking(
+        ultimaTarea?.etapaActual || proyecto.timelineActual || ultimaTarea?.etapa
+    );
+    const estadoProyecto = resolveEstadoProyectoPublico({
+        proyecto,
+        kanbanFollowUpStatus,
+        kanbanStage
+    });
+    const garantiaInicio = resolveGarantiaInicioForTracking({
+        estadoProyectoPublico: estadoProyecto,
+        proyecto,
+        tarea: ultimaTarea
+    });
 
     return {
         codigo: codigoClienteIdentidad,
@@ -624,13 +952,13 @@ const buildProjectSnapshot = async (access) => {
         kanbanFollowUpStatus,
         inversion,
         inversionTotal: inversion,
-        fechaInicio: formatDateSimple(proyecto.createdAt),
-        fechaEntrega: formatDateSimple(proyecto.updatedAt),
-        garantiaInicio: formatDateISO(proyecto.updatedAt),
-        estadoProyecto: proyecto.estado || 'cotizacion',
-            etapaActual: ultimaTarea?.etapaActual || proyecto.timelineActual || ultimaTarea?.etapa || 'Diseño Aprobado',
-            timelineActual: ultimaTarea?.etapaActual || proyecto.timelineActual || ultimaTarea?.etapa || 'Diseño Aprobado',
-        followUpStatus: ultimaTarea?.followUpStatus || 'pendiente',
+        fechaInicio: formatDateSimple(proyecto.fechaContrato || proyecto.createdAt) || 'Por definir',
+        fechaEntrega: resolveFechaEntregaForTracking({ proyecto, tarea: ultimaTarea }),
+        garantiaInicio,
+        estadoProyecto,
+        etapaActual,
+        timelineActual: etapaActual,
+        followUpStatus: kanbanFollowUpStatus,
         pagos,
         totalPagado,
         saldoPendiente,
@@ -777,8 +1105,7 @@ export const getArchivosSeguimiento = async (req, res) => {
 
             const archivos = await buildSeguimientoArchivosList({
                 tareaArchivos: tarea.archivos,
-                clienteCodigo,
-                clientReceipts
+                clienteCodigo
             });
             return res.status(200).json({ success: true, data: archivos });
         }
@@ -788,18 +1115,10 @@ export const getArchivosSeguimiento = async (req, res) => {
             .lean();
 
         const clienteCodigo = String(proyecto?.clienteId || access?.codigo6 || ultimaTarea?.clienteId || '').trim().toUpperCase();
-        const clientReceipts = clienteCodigo
-            ? await ClienteArchivo.find({ clienteId: clienteCodigo, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
-                .sort({ createdAt: -1 })
-                .lean()
-            : [];
 
         const archivos = await buildSeguimientoArchivosList({
-            archivosPublicos: proyecto.archivosPublicos,
-            proyectoArchivos: proyecto.archivos,
-            ultimaTareaArchivos: ultimaTarea?.archivos,
-            clienteCodigo,
-            clientReceipts
+            tareaArchivos: ultimaTarea?.archivos,
+            clienteCodigo
         });
 
         return res.status(200).json({
@@ -834,7 +1153,24 @@ export const getPagosSeguimiento = async (req, res) => {
                 ...buildClientReceiptIndex(clientReceipts)
             };
 
-            return res.status(200).json({ success: true, data: buildPagosDto({ tarea, receiptIndex }) });
+            const kanbanStage = tarea.etapa || '';
+            const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
+                followUpStatus: tarea.followUpStatus,
+                kanbanStage,
+                proyectoEstado: null
+            });
+            const financials = await buildTrackingFinancials({ tarea, receiptIndex });
+
+            return res.status(200).json({
+                success: true,
+                data: {
+                    ...financials,
+                    inversionTotal: financials.inversion,
+                    kanbanFollowUpStatus,
+                    followUpStatus: kanbanFollowUpStatus,
+                    estadoProyecto: resolveEstadoProyectoPublico({ kanbanFollowUpStatus, kanbanStage })
+                }
+            });
         }
 
         const ultimaTarea = await Tarea.findOne({ proyectoId: String(proyecto._id) })
@@ -853,7 +1189,32 @@ export const getPagosSeguimiento = async (req, res) => {
             ...buildClientReceiptIndex(clientReceipts)
         };
 
-        return res.status(200).json({ success: true, data: buildPagosDto({ proyecto, tarea: ultimaTarea, receiptIndex }) });
+        const kanbanStage = ultimaTarea?.etapa || '';
+        const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
+            followUpStatus: ultimaTarea?.followUpStatus,
+            kanbanStage,
+            proyectoEstado: proyecto?.estado
+        });
+        const financials = await buildTrackingFinancials({
+            proyecto,
+            tarea: ultimaTarea,
+            receiptIndex
+        });
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                ...financials,
+                inversionTotal: financials.inversion,
+                kanbanFollowUpStatus,
+                followUpStatus: kanbanFollowUpStatus,
+                estadoProyecto: resolveEstadoProyectoPublico({
+                    proyecto,
+                    kanbanFollowUpStatus,
+                    kanbanStage
+                })
+            }
+        });
     } catch (error) {
         console.error('Error al obtener pagos de seguimiento:', error);
         return res.status(500).json({ success: false, message: 'Error al obtener pagos', error: error.message });
