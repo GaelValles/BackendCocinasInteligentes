@@ -5,8 +5,6 @@ import Tarea from '../models/tarea.model.js';
 import TrackingAccess from '../models/trackingAccess.model.js';
 import ClienteArchivo from '../models/clienteArchivo.model.js';
 import ClienteIdentidad from '../models/clienteIdentidad.model.js';
-import Levantamiento from '../models/levantamiento.model.js';
-import Cotizacion from '../models/cotizacion.model.js';
 import {
     normalizeCodigoInput,
     findEnabledAccessByCodigo6,
@@ -182,42 +180,46 @@ const parseDeliveryWeeksRangeFromLabel = (label = '') => {
     return null;
 };
 
-const collectPreliminarEntriesFromTarea = (tarea) => {
-    const entries = [];
-    const pushEntry = (value) => {
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-            entries.push(value);
-        }
-    };
+const isEmptyDeliveryTimeLabel = (value) => {
+    const label = String(value ?? '').trim();
+    return !label || label === '—' || label.toLowerCase() === 'por definir';
+};
 
-    for (const item of asTrackingCotizaciones(tarea?.preliminarCotizaciones)) {
-        pushEntry(item);
-    }
-    pushEntry(tarea?.preliminarData);
+const pickDeliveryTimeLabelFromQuoteEntry = (entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return '';
 
-    return entries;
+    const dateLabel = String(entry.date ?? '').trim();
+    const rangeLabel = String(entry.rangeLabel ?? '').trim();
+
+    if (parseDeliveryWeeksRangeFromLabel(dateLabel)) return dateLabel;
+    if (parseDeliveryWeeksRangeFromLabel(rangeLabel)) return rangeLabel;
+    if (!isEmptyDeliveryTimeLabel(dateLabel)) return dateLabel;
+    if (!isEmptyDeliveryTimeLabel(rangeLabel)) return rangeLabel;
+
+    return '';
+};
+
+const resolveFormalQuoteEntryForDelivery = (tarea) => {
+    const fromList = pickFirstValidTrackingQuote(asTrackingCotizaciones(tarea?.cotizacionesFormales));
+    if (fromList) return fromList;
+    return isValidTrackingQuoteObject(tarea?.cotizacionFormalData) ? tarea.cotizacionFormalData : null;
+};
+
+const resolvePreliminarQuoteEntryForDelivery = (tarea) => {
+    const fromList = pickFirstValidTrackingQuote(asTrackingCotizaciones(tarea?.preliminarCotizaciones));
+    if (fromList) return fromList;
+    return isValidTrackingQuoteObject(tarea?.preliminarData) ? tarea.preliminarData : null;
 };
 
 const extractDeliveryEstimateLabelFromTarea = (tarea) => {
-    const formalEntries = asTrackingCotizaciones(tarea?.cotizacionesFormales);
-    for (const entry of formalEntries) {
-        const dateLabel = String(entry?.date || '').trim();
-        if (parseDeliveryWeeksRangeFromLabel(dateLabel)) return dateLabel;
+    const formalEntry = resolveFormalQuoteEntryForDelivery(tarea);
+    if (formalEntry) {
+        return pickDeliveryTimeLabelFromQuoteEntry(formalEntry);
     }
 
-    for (const entry of collectPreliminarEntriesFromTarea(tarea)) {
-        const dateLabel = String(entry?.date || '').trim();
-        if (parseDeliveryWeeksRangeFromLabel(dateLabel)) return dateLabel;
-
-        const rangeLabel = String(entry?.rangeLabel || '').trim();
-        if (parseDeliveryWeeksRangeFromLabel(rangeLabel)) return rangeLabel;
-    }
-
-    for (const entry of collectPreliminarEntriesFromTarea(tarea)) {
-        const dateLabel = String(entry?.date || '').trim();
-        if (dateLabel && dateLabel !== '—' && dateLabel.toLowerCase() !== 'por definir') {
-            return dateLabel;
-        }
+    const preliminarEntry = resolvePreliminarQuoteEntryForDelivery(tarea);
+    if (preliminarEntry) {
+        return pickDeliveryTimeLabelFromQuoteEntry(preliminarEntry);
     }
 
     return '';
@@ -240,12 +242,20 @@ const formatMonthYearEs = (value) => {
 };
 
 const resolveFechaEntregaForTracking = ({ proyecto, tarea } = {}) => {
-    const manualEntrega = toDateOrNull(proyecto?.fechaEntrega);
+    const manualEntregaRaw = proyecto?.fechaEntrega;
+    const manualEntrega = toDateOrNull(manualEntregaRaw);
     if (manualEntrega) {
         return formatDateSimple(manualEntrega) || formatMonthYearEs(manualEntrega);
     }
+    if (typeof manualEntregaRaw === 'string' && !isEmptyDeliveryTimeLabel(manualEntregaRaw)) {
+        return String(manualEntregaRaw).trim();
+    }
 
     const estimateLabel = extractDeliveryEstimateLabelFromTarea(tarea);
+    if (!estimateLabel) {
+        return 'Por definir';
+    }
+
     const weeksRange = parseDeliveryWeeksRangeFromLabel(estimateLabel);
     const fechaInicio = toDateOrNull(proyecto?.fechaContrato)
         || toDateOrNull(proyecto?.createdAt)
@@ -256,11 +266,7 @@ const resolveFechaEntregaForTracking = ({ proyecto, tarea } = {}) => {
         return formatMonthYearEs(targetDate);
     }
 
-    if (estimateLabel) {
-        return estimateLabel;
-    }
-
-    return 'Por definir';
+    return estimateLabel;
 };
 
 const PROYECTO_PUBLIC_FILE_TYPES = new Set([
@@ -353,15 +359,30 @@ const mergeArchivosByUrl = (existing = [], incoming = [], mapFn) => {
 
 const asTrackingCotizaciones = (value) => (Array.isArray(value) ? value : []);
 
+const isValidTrackingQuoteObject = (entry) => (
+    Boolean(entry && typeof entry === 'object' && !Array.isArray(entry) && Object.keys(entry).length > 0)
+);
+
+const pickFirstValidTrackingQuote = (entries = []) => {
+    for (const entry of asTrackingCotizaciones(entries)) {
+        if (isValidTrackingQuoteObject(entry)) return entry;
+    }
+    return null;
+};
+
 const resolveTrackingCotizaciones = (tarea) => {
     const cotizacionesFormales = asTrackingCotizaciones(tarea?.cotizacionesFormales);
     const preliminarCotizaciones = asTrackingCotizaciones(tarea?.preliminarCotizaciones);
+    const cotizacionFormalData = pickFirstValidTrackingQuote(cotizacionesFormales)
+        || (isValidTrackingQuoteObject(tarea?.cotizacionFormalData) ? tarea.cotizacionFormalData : null);
+    const preliminarData = pickFirstValidTrackingQuote(preliminarCotizaciones)
+        || (isValidTrackingQuoteObject(tarea?.preliminarData) ? tarea.preliminarData : null);
 
     return {
         cotizacionesFormales,
         preliminarCotizaciones,
-        cotizacionFormalData: cotizacionesFormales,
-        preliminarData: preliminarCotizaciones
+        ...(cotizacionFormalData ? { cotizacionFormalData } : {}),
+        ...(preliminarData ? { preliminarData } : {})
     };
 };
 
@@ -487,6 +508,10 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
                 ? proyecto?.segundoPago
                 : proyecto?.liquidacion);
 
+        const taskReceipt = String(taskSlot?.receiptImage || '').trim();
+        const projectReceipt = String(projectSlot?.receiptImage || '').trim();
+        const receiptImage = taskReceipt || projectReceipt || fallbackReceipt || defaultDto.receiptImage;
+
         out[slot] = normalizePagoSlot({
             amount: Number.isFinite(Number(taskSlot?.amount))
                 ? Number(taskSlot.amount)
@@ -495,14 +520,14 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
                     : (Number.isFinite(fallbackAmount) ? fallbackAmount : defaultDto.amount)),
             date: String(taskSlot?.date || projectSlot?.date || defaultDto.date),
             receiptLabel: String(taskSlot?.receiptLabel || projectSlot?.receiptLabel || defaultDto.receiptLabel),
-            receiptImage: String(taskSlot?.receiptImage || projectSlot?.receiptImage || fallbackReceipt || defaultDto.receiptImage)
+            receiptImage
         });
     }
 
     return {
-        anticipo: out.anticipo,
-        segundoPago: out.segundoPago,
-        liquidacion: out.liquidacion
+        anticipo: normalizePagoSlot(out.anticipo),
+        segundoPago: normalizePagoSlot(out.segundoPago),
+        liquidacion: normalizePagoSlot(out.liquidacion)
     };
 };
 
@@ -528,6 +553,14 @@ const pickInversionAmountFromCotizacionEntry = (entry) => {
     return 0;
 };
 
+const sumPagosAmountsForTracking = ({ proyecto, tarea } = {}) => {
+    const pagosSource = tarea?.pagos || proyecto?.pagos || {};
+    return ['anticipo', 'segundoPago', 'liquidacion'].reduce((acc, slot) => {
+        const amount = Number(pagosSource?.[slot]?.amount);
+        return acc + (Number.isFinite(amount) && amount > 0 ? amount : 0);
+    }, 0);
+};
+
 const resolveInversionForTracking = ({ proyecto, tarea } = {}) => {
     const inversionTarea = Number(tarea?.inversion);
     if (Number.isFinite(inversionTarea) && inversionTarea > 0) {
@@ -539,43 +572,19 @@ const resolveInversionForTracking = ({ proyecto, tarea } = {}) => {
         return Math.round(inversionProyecto);
     }
 
-    const cotizacionesFormales = asTrackingCotizaciones(tarea?.cotizacionesFormales);
-    for (const entry of cotizacionesFormales) {
-        const amount = pickInversionAmountFromCotizacionEntry(entry);
-        if (amount > 0) return Math.round(amount);
-    }
+    const quotes = resolveTrackingCotizaciones(tarea || {});
+    const formalAmount = pickInversionAmountFromCotizacionEntry(quotes.cotizacionFormalData)
+        || pickInversionAmountFromCotizacionEntry(quotes.cotizacionesFormales[0]);
+    if (formalAmount > 0) return Math.round(formalAmount);
 
-    const preliminarCotizaciones = asTrackingCotizaciones(tarea?.preliminarCotizaciones);
-    for (const entry of preliminarCotizaciones) {
-        const amount = pickInversionAmountFromCotizacionEntry(entry);
-        if (amount > 0) return Math.round(amount);
-    }
+    const preliminarAmount = pickInversionAmountFromCotizacionEntry(quotes.preliminarData)
+        || pickInversionAmountFromCotizacionEntry(quotes.preliminarCotizaciones[0]);
+    if (preliminarAmount > 0) return Math.round(preliminarAmount);
 
-    const legacyFormal = pickInversionAmountFromCotizacionEntry(tarea?.cotizacionFormalData);
-    if (legacyFormal > 0) return Math.round(legacyFormal);
-
-    const legacyPreliminar = pickInversionAmountFromCotizacionEntry(tarea?.preliminarData);
-    if (legacyPreliminar > 0) return Math.round(legacyPreliminar);
+    const sumPagos = sumPagosAmountsForTracking({ proyecto, tarea });
+    if (sumPagos > 0) return Math.round(sumPagos);
 
     return 0;
-};
-
-const resolveInversionFromLevantamientoRef = async (levantamientoId) => {
-    if (!levantamientoId || !mongoose.Types.ObjectId.isValid(String(levantamientoId))) {
-        return 0;
-    }
-    const doc = await Levantamiento.findById(levantamientoId).select('precioEstimado').lean();
-    const amount = Number(doc?.precioEstimado);
-    return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
-};
-
-const resolveInversionFromCotizacionRef = async (cotizacionId) => {
-    if (!cotizacionId || !mongoose.Types.ObjectId.isValid(String(cotizacionId))) {
-        return 0;
-    }
-    const doc = await Cotizacion.findById(cotizacionId).select('finalPrice').lean();
-    const amount = Number(doc?.finalPrice);
-    return Number.isFinite(amount) && amount > 0 ? Math.round(amount) : 0;
 };
 
 const isClienteConfirmadoSeguimiento = ({
@@ -662,21 +671,41 @@ const resolveGarantiaInicioForTracking = ({
 
 const buildTrackingFinancials = async ({ proyecto, tarea, receiptIndex }) => {
     const pagos = buildPagosDto({ proyecto, tarea, receiptIndex });
-    let inversion = resolveInversionForTracking({ proyecto, tarea });
-    if (inversion === 0 && proyecto) {
-        const fromFormal = await resolveInversionFromCotizacionRef(proyecto.cotizacion);
-        if (fromFormal > 0) inversion = fromFormal;
-    }
-    if (inversion === 0 && proyecto) {
-        const fromLevantamiento = await resolveInversionFromLevantamientoRef(proyecto.levantamiento);
-        if (fromLevantamiento > 0) inversion = fromLevantamiento;
-    }
+    const inversion = resolveInversionForTracking({ proyecto, tarea });
     const { totalPagado } = calculatePagosSummary(pagos);
-    if (inversion === 0 && totalPagado > 0) {
-        inversion = Math.round(totalPagado);
-    }
     const saldoPendiente = Math.max(inversion - totalPagado, 0);
     return { pagos, inversion, totalPagado, saldoPendiente };
+};
+
+const normalizePagosPayload = (pagos = {}) => {
+    if (!pagos || typeof pagos !== 'object') return null;
+    return {
+        anticipo: normalizePagoSlot(pagos.anticipo),
+        segundoPago: normalizePagoSlot(pagos.segundoPago),
+        liquidacion: normalizePagoSlot(pagos.liquidacion)
+    };
+};
+
+const persistPublicArchivosFromPatch = ({ proyecto, tarea, archivos, codigo6 }) => {
+    const incomingArchivos = Array.isArray(archivos) ? archivos : [];
+    if (!incomingArchivos.length) return;
+
+    proyecto.archivosPublicos = mergeArchivosByUrl(
+        proyecto.archivosPublicos,
+        incomingArchivos,
+        toProyectoArchivoPublico
+    );
+    proyecto.markModified('archivosPublicos');
+
+    if (!tarea) return;
+
+    const clienteCodigo = String(tarea.clienteId || codigo6 || '').trim().toUpperCase();
+    tarea.archivos = mergeArchivosByUrl(
+        tarea.archivos,
+        incomingArchivos,
+        (raw) => toTareaArchivo(raw, clienteCodigo)
+    );
+    tarea.markModified('archivos');
 };
 
 const calculatePagosSummary = (pagos = {}) => {
@@ -1258,7 +1287,10 @@ export const actualizarEstatusPublico = async (req, res) => {
         } = req.body || {};
 
         const tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
-        const incomingArchivos = Array.isArray(archivos) ? archivos : [];
+        const normalizedEtapaActual = etapaActual !== undefined
+            ? normalizeEtapaActualForTracking(etapaActual)
+            : undefined;
+        const normalizedPagos = pagos !== undefined ? normalizePagosPayload(pagos) : null;
 
         const allowedProjectStates = ['cotizacion', 'aprobado', 'en_produccion', 'instalando', 'completado'];
         if (estadoProyecto !== undefined) {
@@ -1275,48 +1307,31 @@ export const actualizarEstatusPublico = async (req, res) => {
             const normalizedState = String(estadoProyecto).trim().toLowerCase();
             proyecto.estado = stateMap[normalizedState] || (allowedProjectStates.includes(normalizedState) ? normalizedState : proyecto.estado);
         }
-        if (etapaActual !== undefined) proyecto.timelineActual = String(etapaActual || '').trim();
+        if (normalizedEtapaActual !== undefined) {
+            proyecto.timelineActual = normalizedEtapaActual;
+        }
         if (inversion !== undefined && Number.isFinite(Number(inversion))) proyecto.presupuestoTotal = Number(inversion);
-        if (pagos && typeof pagos === 'object') {
-            for (const slot of ['anticipo', 'segundoPago', 'liquidacion']) {
-                if (pagos[slot] !== undefined) proyecto.pagos[slot] = pagos[slot];
-            }
+        if (normalizedPagos) {
+            proyecto.pagos = normalizedPagos;
+            proyecto.markModified('pagos');
         }
         if (seguimientoNota !== undefined) proyecto.seguimientoNota = String(seguimientoNota || '').trim();
 
-        if (incomingArchivos.length) {
-            proyecto.archivosPublicos = mergeArchivosByUrl(
-                proyecto.archivosPublicos,
-                incomingArchivos,
-                toProyectoArchivoPublico
-            );
-            proyecto.markModified('archivosPublicos');
+        if (archivos !== undefined) {
+            persistPublicArchivosFromPatch({ proyecto, tarea, archivos, codigo6 });
         }
 
         await proyecto.save();
 
         if (tarea) {
-            if (etapaActual !== undefined) tarea.etapaActual = String(etapaActual || '').trim();
+            if (normalizedEtapaActual !== undefined) tarea.etapaActual = normalizedEtapaActual;
             if (seguimientoNota !== undefined) tarea.seguimientoNota = String(seguimientoNota || '').trim();
             if (inversion !== undefined && Number.isFinite(Number(inversion))) {
                 tarea.inversion = Number(inversion);
             }
-            if (pagos && typeof pagos === 'object') {
-                for (const slot of ['anticipo', 'segundoPago', 'liquidacion']) {
-                    if (pagos[slot] !== undefined) {
-                        tarea.pagos[slot] = pagos[slot];
-                    }
-                }
+            if (normalizedPagos) {
+                tarea.pagos = normalizedPagos;
                 tarea.markModified('pagos');
-            }
-            if (incomingArchivos.length) {
-                const clienteCodigo = String(tarea.clienteId || codigo6 || '').trim();
-                tarea.archivos = mergeArchivosByUrl(
-                    tarea.archivos,
-                    incomingArchivos,
-                    (raw) => toTareaArchivo(raw, clienteCodigo)
-                );
-                tarea.markModified('archivos');
             }
             if (cotizacionesFormales !== undefined) {
                 tarea.cotizacionesFormales = asTrackingCotizaciones(cotizacionesFormales);
