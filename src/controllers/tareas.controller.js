@@ -643,6 +643,47 @@ export const upload = multer({ storage });
 const isStaff = (req) => ['admin', 'arquitecto'].includes(req.admin?.rol);
 const isOperativo = (req) => ROLES_OPERATIVOS.includes(req.admin?.rol);
 
+const isTareaAssignmentAdmin = (req) => String(req.admin?.rol || '').toLowerCase() === 'admin';
+
+const authorizeTareaWorkerAssignment = async (req, assignedUsers) => {
+    if (!req.admin?._id) {
+        return { allowed: false, status: 401, message: 'Autenticación requerida' };
+    }
+
+    if (isTareaAssignmentAdmin(req)) {
+        return { allowed: true };
+    }
+
+    if (!isOperativo(req)) {
+        return {
+            allowed: false,
+            status: 403,
+            message: 'No autorizado para asignar trabajadores a la tarea'
+        };
+    }
+
+    const ids = assignedUsers.map((user) => String(user._id));
+    if (!ids.length) {
+        return { allowed: true };
+    }
+
+    const assignableCount = await Admin.countDocuments({
+        _id: { $in: ids },
+        rol: { $in: ROLES_ASIGNABLES },
+        status: true
+    });
+
+    if (assignableCount !== ids.length) {
+        return {
+            allowed: false,
+            status: 403,
+            message: 'Solo puedes asignar integrantes válidos del equipo'
+        };
+    }
+
+    return { allowed: true };
+};
+
 const canViewOrEditTask = (req, tarea) => {
     if (isStaff(req)) return true;
     if (!isOperativo(req)) return false;
@@ -1762,10 +1803,6 @@ export const asignarTrabajadoresTarea = async (req, res) => {
         const { id } = req.params;
         const { asignadoA, assignedToIds, assignedTo } = req.body || {};
 
-        if (!req.admin || req.admin.rol !== 'admin') {
-            return res.status(403).json({ success: false, message: 'Solo un admin puede asignar trabajadores' });
-        }
-
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ success: false, message: 'ID de tarea inválido' });
         }
@@ -1783,6 +1820,11 @@ export const asignarTrabajadoresTarea = async (req, res) => {
         const assignedUsers = await resolveAssignedUsers(assignedIds);
         if (assignedUsers.error) {
             return res.status(404).json({ success: false, message: assignedUsers.error });
+        }
+
+        const auth = await authorizeTareaWorkerAssignment(req, assignedUsers);
+        if (!auth.allowed) {
+            return res.status(auth.status).json({ success: false, message: auth.message });
         }
 
         const before = {

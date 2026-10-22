@@ -7,10 +7,30 @@ import Notificaciones from "../models/notificaciones.model.js";
 import Tarea from '../models/tarea.model.js';
 import { upsertTrackingAccessFromTarea } from '../services/trackingAccess.service.js';
 import { verifyRecaptchaToken, extractCaptchaToken } from '../services/recaptcha.service.js';
+import {
+    ensureClienteIdentidadForTarea,
+    isValidClienteCodigo,
+    normalizeClienteCodigoValue
+} from '../services/clienteIdentidad.service.js';
 
 const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'empleado_general', 'staff'];
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
 const ESTADOS_CITA_VALIDOS = ['programada', 'en_proceso', 'completada', 'cancelada'];
+
+const isLocalDevelopmentRequest = (req) => {
+    if (process.env.NODE_ENV !== 'production') {
+        return true;
+    }
+
+    const host = String(req.get('host') || '').toLowerCase();
+    const hostname = String(req.hostname || '').toLowerCase();
+    return host.includes('localhost')
+        || host.startsWith('127.0.0.1')
+        || hostname === 'localhost'
+        || hostname === '127.0.0.1';
+};
+
+const shouldSkipCaptchaForCita = (req) => isLocalDevelopmentRequest(req);
 
 const isCitaAssignmentAdmin = (req) => String(req.admin?.rol || '').toLowerCase() === 'admin';
 
@@ -92,79 +112,222 @@ const buildCitaPayload = (cita) => ({
     informacionAdicional: cita.informacionAdicional || ''
 });
 
-const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
-    // Manejar ingenieroAsignado como array o singular (backward compatibility)
-    let assignedIds = [];
-    let assignedNames = [];
+const extractAssigneeIdFromCitaRef = (entry) => {
+    if (entry === undefined || entry === null) return '';
 
-    if (Array.isArray(cita.ingenieroAsignado)) {
-        // Es array (nuevo formato)
-        assignedIds = cita.ingenieroAsignado
-            .filter(id => id && mongoose.Types.ObjectId.isValid(String(id)))
-            .map(id => String(id));
-    } else if (cita.ingenieroAsignado) {
-        // Es singular (formato antiguo)
-        assignedIds = [String(cita.ingenieroAsignado)];
+    if (typeof entry === 'object') {
+        const rawId = entry._id ?? entry.id;
+        if (rawId !== undefined && rawId !== null) {
+            const id = String(rawId).trim();
+            return mongoose.Types.ObjectId.isValid(id) ? id : '';
+        }
+        return '';
     }
 
-    // Obtener nombres de los ingenieros
-    if (assignedIds.length > 0) {
-        const ingenieros = await Admin.find({ _id: { $in: assignedIds } }, 'nombre');
-        assignedNames = ingenieros.map(ing => ing.nombre);
-    }
+    const id = String(entry).trim();
+    return mongoose.Types.ObjectId.isValid(id) ? id : '';
+};
 
+const extractAssigneeNameFromCitaRef = (entry) => {
+    if (!entry || typeof entry !== 'object') return '';
+    return String(entry.nombre || entry.name || '').trim();
+};
+
+const normalizeCitaEmail = (value) => String(value || '').trim().toLowerCase();
+
+const normalizeCitaPhone = (value) => String(value || '').replace(/\D/g, '').trim();
+
+const isDuplicateKeyError = (error) => Number(error?.code) === 11000;
+
+const findExistingTareaForCitaSync = async (cita) => {
     const citaId = String(cita._id);
-    const existing = await Tarea.findOne({
+
+    const byCitaLink = await Tarea.findOne({
         $or: [
             { sourceType: 'cita', sourceId: citaId },
             { sourceCitaId: citaId }
         ]
     });
+    if (byCitaLink) return byCitaLink;
+
+    const telefonoNorm = normalizeCitaPhone(cita.telefonoCliente);
+    const correoNorm = normalizeCitaEmail(cita.correoCliente);
+    if (!telefonoNorm && !correoNorm) return null;
+
+    const contactFilters = [];
+    if (correoNorm) {
+        contactFilters.push(
+            { 'cliente.correo': correoNorm },
+            { 'cita.correoCliente': correoNorm }
+        );
+    }
+    if (telefonoNorm) {
+        contactFilters.push(
+            { 'cliente.telefono': telefonoNorm },
+            { 'cita.telefonoCliente': telefonoNorm }
+        );
+    }
+
+    const candidates = await Tarea.find({
+        etapa: 'citas',
+        $or: contactFilters
+    })
+        .sort({ updatedAt: -1 })
+        .limit(25);
+
+    for (const task of candidates) {
+        const taskPhone = normalizeCitaPhone(task.cliente?.telefono || task.cita?.telefonoCliente);
+        const taskEmail = normalizeCitaEmail(task.cliente?.correo || task.cita?.correoCliente);
+        const phoneMatch = Boolean(telefonoNorm && taskPhone && telefonoNorm === taskPhone);
+        const emailMatch = Boolean(correoNorm && taskEmail && correoNorm === taskEmail);
+        if (!phoneMatch && !emailMatch) continue;
+
+        const linkedSourceId = String(task.sourceId || task.sourceCitaId || '').trim();
+        if (linkedSourceId && linkedSourceId !== citaId && task.sourceType === 'cita') {
+            continue;
+        }
+
+        return task;
+    }
+
+    return null;
+};
+
+const resolveClienteCodigoForCitaTask = async (cita, existing) => {
+    const existingCode = normalizeClienteCodigoValue(existing?.clienteId || '');
+    if (isValidClienteCodigo(existingCode)) {
+        return existingCode;
+    }
+
+    const preferredFromCita = normalizeClienteCodigoValue(cita?.clienteId || cita?.codigoProyecto || '');
+    const identidad = await ensureClienteIdentidadForTarea({
+        nombre: cita.nombreCliente,
+        correo: cita.correoCliente,
+        telefono: cita.telefonoCliente,
+        codigoPreferido: isValidClienteCodigo(preferredFromCita) ? preferredFromCita : undefined
+    });
+
+    const resolved = normalizeClienteCodigoValue(identidad?.codigo || '');
+    return isValidClienteCodigo(resolved) ? resolved : '';
+};
+
+const resolveAssigneesFromCita = async (cita) => {
+    const raw = cita?.ingenieroAsignado;
+    const entries = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+
+    const assignedIds = [];
+    const assignedNames = [];
+
+    for (const entry of entries) {
+        const id = extractAssigneeIdFromCitaRef(entry);
+        if (!id || assignedIds.includes(id)) continue;
+        assignedIds.push(id);
+        assignedNames.push(extractAssigneeNameFromCitaRef(entry));
+    }
+
+    if (!assignedIds.length) {
+        return { assignedIds: [], assignedNames: [] };
+    }
+
+    const needsDbNames = assignedNames.some((name) => !name);
+    if (!needsDbNames) {
+        return { assignedIds, assignedNames };
+    }
+
+    const ingenieros = await Admin.find({ _id: { $in: assignedIds } }, 'nombre').lean();
+    const nameById = new Map(ingenieros.map((ing) => [String(ing._id), String(ing.nombre || '').trim()]));
+
+    return {
+        assignedIds,
+        assignedNames: assignedIds.map((id, index) => assignedNames[index] || nameById.get(id) || '')
+    };
+};
+
+const syncTaskFromCita = async (cita, req, action = 'sync_cita') => {
+    let { assignedIds, assignedNames } = await resolveAssigneesFromCita(cita);
+
+    const citaId = String(cita._id);
+    let existing = await findExistingTareaForCitaSync(cita);
+    const clienteCodigo = await resolveClienteCodigoForCitaTask(cita, existing);
+    const nombreCliente = String(cita.nombreCliente || existing?.nombreProyecto || '').trim();
 
     const payload = {
         etapa: existing?.etapa && existing.etapa !== 'citas' ? existing.etapa : 'citas',
         estado: citaToTaskEstado(cita.estado),
         asignadoA: assignedIds.length > 0 ? assignedIds : [],
         asignadoANombre: assignedNames.length > 0 ? assignedNames : [],
-        nombreProyecto: '',
-        proyectoId: null,
-        notas: cita.informacionAdicional || cita.especificacionesInicio?.especificaciones || '',
-        prioridad: 'media',
+        nombreProyecto: nombreCliente,
+        proyectoId: existing?.proyectoId ?? null,
+        notas: cita.informacionAdicional || cita.especificacionesInicio?.especificaciones || existing?.notas || '',
+        prioridad: existing?.prioridad || 'media',
         citaStarted: ['en_proceso', 'completada'].includes(cita.estado),
         citaFinished: cita.estado === 'completada',
         sourceType: 'cita',
         sourceId: citaId,
         cita: buildCitaPayload(cita),
-        mapsUrl: cita.mapsUrl || '',
-        sourceCitaId: citaId
+        mapsUrl: cita.mapsUrl || existing?.mapsUrl || '',
+        sourceCitaId: citaId,
+        cliente: {
+            nombre: nombreCliente,
+            correo: normalizeCitaEmail(cita.correoCliente),
+            telefono: String(cita.telefonoCliente || '').trim()
+        },
+        ...(clienteCodigo ? { clienteId: clienteCodigo } : {})
+    };
+
+    if (existing && assignedIds.length === 0 && Array.isArray(existing.asignadoA) && existing.asignadoA.length > 0) {
+        assignedIds = existing.asignadoA.map((id) => String(id)).filter(Boolean);
+        assignedNames = Array.isArray(existing.asignadoANombre)
+            ? existing.asignadoANombre.map((name) => String(name || '').trim()).filter(Boolean)
+            : [];
+        payload.asignadoA = assignedIds;
+        payload.asignadoANombre = assignedNames.length ? assignedNames : payload.asignadoANombre;
+    }
+
+    const historyEntry = {
+        by: req.admin?._id ? String(req.admin._id) : null,
+        action,
+        changes: { citaId: String(cita._id), estadoCita: cita.estado },
+        at: new Date()
+    };
+
+    const applyAndSaveExisting = async (doc) => {
+        Object.assign(doc, payload);
+        doc.historialCambios = doc.historialCambios || [];
+        doc.historialCambios.push(historyEntry);
+        await doc.save();
+        await upsertTrackingAccessFromTarea(doc);
+        return doc;
     };
 
     if (existing) {
-        Object.assign(existing, payload);
-        existing.historialCambios = existing.historialCambios || [];
-        existing.historialCambios.push({
-            by: req.admin?._id ? String(req.admin._id) : null,
-            action,
-            changes: { citaId: String(cita._id), estadoCita: cita.estado },
-            at: new Date()
-        });
-        await existing.save();
-        await upsertTrackingAccessFromTarea(existing);
-        return existing;
+        return applyAndSaveExisting(existing);
     }
 
-    const nueva = new Tarea({ 
-        ...payload, 
+    const nueva = new Tarea({
+        ...payload,
         historialCambios: [{
-            by: req.admin?._id ? String(req.admin._id) : null,
-            action: 'create_from_cita',
-            changes: { citaId: String(cita._id), estadoCita: cita.estado },
-            at: new Date()
-        }] 
+            ...historyEntry,
+            action: action === 'sync_cita' ? 'create_from_cita' : action
+        }]
     });
-    await nueva.save();
-    await upsertTrackingAccessFromTarea(nueva);
-    return nueva;
+
+    try {
+        await nueva.save();
+        await upsertTrackingAccessFromTarea(nueva);
+        return nueva;
+    } catch (error) {
+        if (!isDuplicateKeyError(error)) {
+            throw error;
+        }
+
+        existing = await findExistingTareaForCitaSync(cita);
+        if (!existing) {
+            throw error;
+        }
+
+        return applyAndSaveExisting(existing);
+    }
 };
 
 const removeTaskFromCita = async (citaId) => {
@@ -197,25 +360,39 @@ export const crearCita = async (req, res) => {
       nombreCliente
     });
 
-        // Verificar token de captcha en headers o body (frontend puede enviarlo de varias formas)
         const captchaHeader = extractCaptchaToken(req);
+        const skipCaptcha = shouldSkipCaptchaForCita(req);
 
-        if (!captchaHeader) {
-            console.warn('[crearCita] Rechazada: falta captcha token');
-            return res.status(400).json({ success: false, message: "El captcha (captcha-token o cf-turnstile-response) es requerido" });
-        }
+        if (!skipCaptcha) {
+            if (!captchaHeader) {
+                console.warn('[crearCita] Rechazada: falta captcha token');
+                return res.status(400).json({
+                    success: false,
+                    message: 'El captcha (captcha-token o cf-turnstile-response) es requerido'
+                });
+            }
 
-        const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
-            expectedAction: 'submit_cita'
-        });
-
-        if (!captchaResult.success) {
-            console.warn('[crearCita] Captcha rechazado:', JSON.stringify(captchaResult));
-            return res.status(400).json({
-                success: false,
-                message: 'La verificación del captcha falló',
-                error: captchaResult.error || 'Token inválido o expirado'
+            const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
+                expectedAction: 'submit_cita'
             });
+
+            if (!captchaResult.success) {
+                console.warn('[crearCita] Captcha rechazado:', JSON.stringify(captchaResult));
+                return res.status(400).json({
+                    success: false,
+                    message: 'La verificación del captcha falló',
+                    error: captchaResult.error || 'Token inválido o expirado'
+                });
+            }
+        } else if (captchaHeader) {
+            const captchaResult = await verifyRecaptchaToken(String(captchaHeader), {
+                expectedAction: 'submit_cita'
+            });
+            if (!captchaResult.success) {
+                console.warn('[crearCita] Captcha inválido en desarrollo; se continúa sin bloquear:', captchaResult.error);
+            }
+        } else {
+            console.log('[crearCita] Captcha omitido en entorno de desarrollo/local');
         }
 
     // Validaciones básicas
@@ -232,7 +409,12 @@ export const crearCita = async (req, res) => {
       fechaObj = new Date(String(fechaAgendada));
     }
     if (!fechaObj || isNaN(fechaObj.getTime())) {
-      return res.status(400).json({ message: "Fecha agendada inválida" });
+      return res.status(400).json({
+        success: false,
+        message: 'Fecha agendada inválida. Usa una fecha ISO válida o un timestamp numérico.',
+        field: 'fechaAgendada',
+        value: fechaAgendada
+      });
     }
 
         // Verificar que la fecha sea futura y cumpla con mínimo 1 hora de anticipación
@@ -242,7 +424,12 @@ export const crearCita = async (req, res) => {
         const diferenciaMs = fechaObj.getTime() - ahoraMexico.getTime();
         const unaHoraMs = 60 * 60 * 1000;
         if (diferenciaMs < unaHoraMs) {
-            return res.status(400).json({ success: false, message: "La cita debe solicitarse con al menos 1 hora de anticipación" });
+            return res.status(400).json({
+                success: false,
+                message: 'La cita debe agendarse con al menos 1 hora de anticipación respecto a la hora actual (America/Mexico_City).',
+                field: 'fechaAgendada',
+                minAnticipacionHoras: 1
+            });
         }
 
     // Convertir a hora de México (America/Mexico_City) para validaciones
@@ -251,9 +438,11 @@ export const crearCita = async (req, res) => {
     // VALIDACIÓN: Solo lunes a viernes (0=Domingo, 6=Sábado)
     const diaSemana = fechaMexico.getDay();
     if (diaSemana === 0 || diaSemana === 6) {
-      return res.status(400).json({ 
-        message: "Las citas solo pueden agendarse de lunes a viernes",
-        diaRecibido: fechaMexico.toLocaleDateString('es-MX', { 
+      return res.status(400).json({
+        success: false,
+        message: 'Las citas solo pueden agendarse de lunes a viernes (hora de México).',
+        field: 'fechaAgendada',
+        diaRecibido: fechaMexico.toLocaleDateString('es-MX', {
           weekday: 'long',
           year: 'numeric',
           month: 'long',
@@ -269,8 +458,11 @@ export const crearCita = async (req, res) => {
     const horaDecimal = hora + (minutos / 60);
     
     if (horaDecimal < 9 || horaDecimal >= 18) {
-      return res.status(400).json({ 
-        message: "Las citas solo pueden agendarse entre las 9:00 AM y las 6:00 PM (hora de México)",
+      return res.status(400).json({
+        success: false,
+        message: 'Las citas solo pueden agendarse entre las 9:00 y las 18:00 (hora de México).',
+        field: 'fechaAgendada',
+        horarioPermitido: '09:00-18:00',
         horaRecibida: `${hora}:${minutos.toString().padStart(2, '0')}`
       });
     }
@@ -305,7 +497,11 @@ export const crearCita = async (req, res) => {
 
     // Validar ObjectId del diseño si se proporciona
     if (diseno && !mongoose.Types.ObjectId.isValid(diseno)) {
-      return res.status(400).json({ message: "ID de diseño inválido" });
+      return res.status(400).json({
+        success: false,
+        message: 'ID de diseño inválido',
+        field: 'diseno'
+      });
     }
 
     // Crear y guardar cita
