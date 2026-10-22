@@ -12,6 +12,66 @@ const ROLES_ASIGNABLES = ['admin', 'arquitecto', 'empleado', 'ingeniero', 'emple
 const ROLES_OPERATIVOS = ['ingeniero', 'arquitecto', 'empleado', 'empleado_general', 'staff'];
 const ESTADOS_CITA_VALIDOS = ['programada', 'en_proceso', 'completada', 'cancelada'];
 
+const isCitaAssignmentAdmin = (req) => String(req.admin?.rol || '').toLowerCase() === 'admin';
+
+const isCitaAssignmentOperativo = (req) => ROLES_OPERATIVOS.includes(String(req.admin?.rol || '').toLowerCase());
+
+const readIngenieroIdsArrayFromBody = (body = {}) => {
+    const raw = body.ingenieroIds ?? body.ingenierosIds;
+    if (raw === undefined || raw === null) return null;
+    return Array.isArray(raw) ? raw : [raw];
+};
+
+const authorizeCitaIngenieroAssignment = async (req, ingenieroIds = []) => {
+    if (!req.admin?._id) {
+        return { allowed: false, status: 401, message: 'Autenticación requerida' };
+    }
+
+    if (isCitaAssignmentAdmin(req)) {
+        return { allowed: true };
+    }
+
+    if (!isCitaAssignmentOperativo(req)) {
+        return {
+            allowed: false,
+            status: 403,
+            message: 'No autorizado para asignar ingenieros a la cita'
+        };
+    }
+
+    const ids = [...new Set(
+        (Array.isArray(ingenieroIds) ? ingenieroIds : [])
+            .map((id) => String(id || '').trim())
+            .filter(Boolean)
+    )];
+
+    if (!ids.length) {
+        return { allowed: true };
+    }
+
+    for (const ingId of ids) {
+        if (!mongoose.Types.ObjectId.isValid(ingId)) {
+            return { allowed: false, status: 400, message: `ID de ingeniero inválido: ${ingId}` };
+        }
+    }
+
+    const assignableCount = await Admin.countDocuments({
+        _id: { $in: ids },
+        rol: { $in: ROLES_ASIGNABLES },
+        status: true
+    });
+
+    if (assignableCount !== ids.length) {
+        return {
+            allowed: false,
+            status: 403,
+            message: 'Solo puedes asignar integrantes del equipo (roles operativos y admin)'
+        };
+    }
+
+    return { allowed: true };
+};
+
 const citaToTaskEstado = (estadoCita) => (estadoCita === 'completada' ? 'completada' : 'pendiente');
 
 const normalizeString = (value) => (typeof value === 'string' ? value.trim() : value);
@@ -283,17 +343,26 @@ export const crearCita = async (req, res) => {
     }
 };
 
-// Asignar ingeniero a una cita (solo admin)
+// Asignar ingeniero a una cita (admin o integrante operativo)
 export const asignarIngenieroCita = async (req, res) => {
   try {
     const { id } = req.params;
-    const { ingenieroId } = req.body;
+    let ingenieroId = req.body.ingenieroId ?? req.body.ingenierosId;
+    if (ingenieroId === undefined && Array.isArray(req.body.ingenierosIds) && req.body.ingenierosIds.length) {
+      ingenieroId = req.body.ingenierosIds[0];
+    }
+    if (ingenieroId === undefined && Array.isArray(req.body.ingenieroIds) && req.body.ingenieroIds.length) {
+      ingenieroId = req.body.ingenieroIds[0];
+    }
 
-    // Verificar que el usuario sea admin
-    if (!req.admin || req.admin.rol !== 'admin') {
-      return res.status(403).json({ 
+    const auth = await authorizeCitaIngenieroAssignment(
+      req,
+      ingenieroId ? [ingenieroId] : []
+    );
+    if (!auth.allowed) {
+      return res.status(auth.status).json({
         success: false,
-        message: "Solo el administrador puede asignar ingenieros"
+        message: auth.message
       });
     }
 
@@ -384,21 +453,20 @@ export const asignarIngenieroCita = async (req, res) => {
 export const asignarMultiplesIngenieros = async (req, res) => {
   try {
     const { id } = req.params;
-    const { ingenieroIds } = req.body;
+    const ingenieroIds = readIngenieroIdsArrayFromBody(req.body);
 
-    // Verificar que el usuario sea admin
-    if (!req.admin || req.admin.rol !== 'admin') {
-      return res.status(403).json({
+    if (ingenieroIds === null) {
+      return res.status(400).json({
         success: false,
-        message: "Solo administradores pueden hacer esta operación"
+        message: 'ingenieroIds o ingenierosIds debe ser un array de IDs'
       });
     }
 
-    // Validar que ingenieroIds sea array
-    if (!Array.isArray(ingenieroIds)) {
-      return res.status(400).json({
+    const auth = await authorizeCitaIngenieroAssignment(req, ingenieroIds);
+    if (!auth.allowed) {
+      return res.status(auth.status).json({
         success: false,
-        message: "ingenieroIds debe ser un array"
+        message: auth.message
       });
     }
 
