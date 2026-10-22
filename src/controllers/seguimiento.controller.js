@@ -10,7 +10,9 @@ import {
     findEnabledAccessByCodigo6,
     bootstrapTrackingAccessByCodigo6,
     getCodigo6FromProyecto,
-    getCodigo6FromTarea
+    getCodigo6FromTarea,
+    upsertTrackingAccessFromProyecto,
+    upsertTrackingAccessFromTarea
 } from '../services/trackingAccess.service.js';
 
 const TRACKING_SCOPE = 'tracking:read';
@@ -148,14 +150,27 @@ const loadClienteArchivosForTracking = async (clienteCodigo = '') => {
 
 const buildSeguimientoArchivosList = async ({
     tareaArchivos = [],
+    archivosPublicos = [],
     clienteCodigo = ''
 } = {}) => {
     const clienteArchivos = await loadClienteArchivosForTracking(clienteCodigo);
     const merged = mergeTrackingFiles(
+        filterRealTrackingArchivos(archivosPublicos),
         filterRealTrackingArchivos(tareaArchivos),
         filterRealTrackingArchivos(clienteArchivos)
     );
     return excludeHardcodedTrackingFiles(merged);
+};
+
+const throwHttpsMediaRequired = (label) => {
+    const error = new Error(`${label} debe ser una URL https. No se aceptan archivos embebidos en Base64.`);
+    error.statusCode = 400;
+    throw error;
+};
+
+const assertNotEmbeddedMedia = (value, label) => {
+    const raw = String(value || '').trim();
+    if (raw.startsWith('data:')) throwHttpsMediaRequired(label);
 };
 
 const parseDeliveryWeeksRangeFromLabel = (label = '') => {
@@ -310,6 +325,7 @@ const normalizeIncomingArchivoFields = (archivo = {}) => {
 const toProyectoArchivoPublico = (archivo) => {
     const { nombre, url, typeRaw } = normalizeIncomingArchivoFields(archivo);
     if (!url) return null;
+    assertNotEmbeddedMedia(url, 'La URL del archivo');
 
     return {
         nombre: nombre || 'Archivo',
@@ -322,8 +338,12 @@ const toProyectoArchivoPublico = (archivo) => {
 const toTareaArchivo = (archivo, clienteId = '') => {
     const { nombre, url, typeRaw } = normalizeIncomingArchivoFields(archivo);
     if (!url) return null;
+    assertNotEmbeddedMedia(url, 'La URL del archivo');
 
     const tipo = String(typeRaw || inferFileTypeFromName(nombre, 'otro')).trim() || 'otro';
+    const provider = /res\.cloudinary\.com/i.test(url)
+        ? 'cloudinary'
+        : (archivo?.provider || 'local');
 
     return {
         id: String(archivo?.id || ''),
@@ -332,7 +352,7 @@ const toTareaArchivo = (archivo, clienteId = '') => {
         nivel: archivo?.nivel ?? null,
         url,
         key: String(archivo?.key || ''),
-        provider: archivo?.provider || 'local',
+        provider,
         mimeType: String(archivo?.mimeType || ''),
         clienteId: String(archivo?.clienteId || clienteId || ''),
         createdAt: archivo?.createdAt ? new Date(archivo.createdAt) : new Date()
@@ -474,12 +494,28 @@ const ESTADO_PROYECTO_PUBLICO = {
 
 const PROYECTO_ESTADOS_CONFIRMADOS = new Set(['aprobado', 'en_produccion', 'instalando', 'completado']);
 
-const normalizePagoSlot = (slot = {}) => ({
+const readStoredPagoSlot = (slot = {}) => ({
     amount: Math.max(0, Math.round(Number(slot?.amount) || 0)),
     date: String(slot?.date ?? ''),
     receiptLabel: String(slot?.receiptLabel || 'Ver recibo'),
     receiptImage: String(slot?.receiptImage ?? '')
 });
+
+const normalizePagoSlot = (slot, previous = {}) => {
+    const stored = readStoredPagoSlot(previous);
+    if (!slot || typeof slot !== 'object') return stored;
+
+    const hasReceipt = Object.prototype.hasOwnProperty.call(slot, 'receiptImage');
+    const receiptImage = hasReceipt ? String(slot.receiptImage ?? '').trim() : stored.receiptImage;
+    if (hasReceipt) assertNotEmbeddedMedia(receiptImage, 'receiptImage');
+
+    return {
+        amount: slot.amount === undefined ? stored.amount : Math.max(0, Math.round(Number(slot.amount) || 0)),
+        date: slot.date === undefined ? stored.date : String(slot.date ?? ''),
+        receiptLabel: slot.receiptLabel === undefined ? stored.receiptLabel : String(slot.receiptLabel || 'Ver recibo'),
+        receiptImage
+    };
+};
 
 const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
     const defaultDto = {
@@ -512,7 +548,7 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
         const projectReceipt = String(projectSlot?.receiptImage || '').trim();
         const receiptImage = taskReceipt || projectReceipt || fallbackReceipt || defaultDto.receiptImage;
 
-        out[slot] = normalizePagoSlot({
+        out[slot] = readStoredPagoSlot({
             amount: Number.isFinite(Number(taskSlot?.amount))
                 ? Number(taskSlot.amount)
                 : (Number.isFinite(Number(projectSlot?.amount))
@@ -525,9 +561,9 @@ const buildPagosDto = ({ proyecto, tarea, receiptIndex = {} } = {}) => {
     }
 
     return {
-        anticipo: normalizePagoSlot(out.anticipo),
-        segundoPago: normalizePagoSlot(out.segundoPago),
-        liquidacion: normalizePagoSlot(out.liquidacion)
+        anticipo: readStoredPagoSlot(out.anticipo),
+        segundoPago: readStoredPagoSlot(out.segundoPago),
+        liquidacion: readStoredPagoSlot(out.liquidacion)
     };
 };
 
@@ -677,13 +713,33 @@ const buildTrackingFinancials = async ({ proyecto, tarea, receiptIndex }) => {
     return { pagos, inversion, totalPagado, saldoPendiente };
 };
 
-const normalizePagosPayload = (pagos = {}) => {
-    if (!pagos || typeof pagos !== 'object') return null;
+const previousPagoSlot = (proyectoSlot, tareaSlot) => {
+    const fromProject = readStoredPagoSlot(proyectoSlot);
+    const fromTask = readStoredPagoSlot(tareaSlot);
     return {
-        anticipo: normalizePagoSlot(pagos.anticipo),
-        segundoPago: normalizePagoSlot(pagos.segundoPago),
-        liquidacion: normalizePagoSlot(pagos.liquidacion)
+        ...fromTask,
+        ...fromProject,
+        receiptImage: fromProject.receiptImage || fromTask.receiptImage
     };
+};
+
+const PAGO_SLOT_KEYS = ['anticipo', 'segundoPago', 'liquidacion'];
+
+const normalizePagosPayload = (pagos = {}, previous = {}) => {
+    if (!pagos || typeof pagos !== 'object') return null;
+
+    const touchedSlots = PAGO_SLOT_KEYS.filter((slot) => (
+        Object.prototype.hasOwnProperty.call(pagos, slot)
+    ));
+    if (!touchedSlots.length) return null;
+
+    const merged = {};
+    for (const slot of PAGO_SLOT_KEYS) {
+        merged[slot] = touchedSlots.includes(slot)
+            ? normalizePagoSlot(pagos[slot], previous[slot])
+            : readStoredPagoSlot(previous[slot]);
+    }
+    return merged;
 };
 
 const persistPublicArchivosFromPatch = ({ proyecto, tarea, archivos, codigo6 }) => {
@@ -807,6 +863,21 @@ const resolveProjectForAccess = async (access) => {
     return null;
 };
 
+const resolveProyectoForTareaOnlyTracking = async (access, tarea) => {
+    const codigo6 = String(access?.codigo6 || tarea?.clienteId || '').trim().toUpperCase();
+    if (codigo6.length === 6) {
+        const byCodigo = await Proyecto.findOne({ clienteId: codigo6 })
+            .sort({ updatedAt: -1 })
+            .lean();
+        if (byCodigo) return byCodigo;
+    }
+    const proyectoId = tarea?.proyectoId;
+    if (proyectoId && mongoose.Types.ObjectId.isValid(String(proyectoId))) {
+        return Proyecto.findById(proyectoId).lean();
+    }
+    return null;
+};
+
 const resolveTaskForAccess = async (access) => {
     if (!access) return null;
 
@@ -840,18 +911,21 @@ const buildProjectSnapshot = async (access) => {
 
         // Usar clienteId de la tarea (ya contiene código de clienteIdentidad)
         const codigoClienteIdentidad = String(tarea?.clienteId || access?.codigo6 || '').trim().toUpperCase();
+        const proyectoLinked = await resolveProyectoForTareaOnlyTracking(access, tarea);
         const clientReceipts = codigoClienteIdentidad
             ? await ClienteArchivo.find({ clienteId: codigoClienteIdentidad, tipo: { $in: Array.from(TRACKING_RECEIPT_TYPES) } })
                 .sort({ createdAt: -1 })
                 .lean()
             : [];
         const receiptIndex = {
+            ...buildTaskReceiptIndex(proyectoLinked?.archivos),
             ...buildTaskReceiptIndex(tarea?.archivos),
             ...buildClientReceiptIndex(clientReceipts)
         };
 
         const clienteNombre = tarea.cliente?.nombre || tarea.cita?.nombreCliente || 'Cliente';
         const { pagos, inversion, totalPagado, saldoPendiente } = await buildTrackingFinancials({
+            proyecto: proyectoLinked,
             tarea,
             receiptIndex
         });
@@ -878,12 +952,13 @@ const buildProjectSnapshot = async (access) => {
         });
         const archivos = await buildSeguimientoArchivosList({
             tareaArchivos: tarea.archivos,
+            archivosPublicos: proyectoLinked?.archivosPublicos,
             clienteCodigo: codigoClienteIdentidad
         });
         const cotizaciones = resolveTrackingCotizaciones(tarea);
         const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
         const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
-        const fechaEntrega = resolveFechaEntregaForTracking({ tarea });
+        const fechaEntrega = resolveFechaEntregaForTracking({ proyecto: proyectoLinked, tarea });
 
         return {
             codigo: codigoClienteIdentidad,
@@ -935,6 +1010,7 @@ const buildProjectSnapshot = async (access) => {
 
     const archivos = await buildSeguimientoArchivosList({
         tareaArchivos: ultimaTarea?.archivos,
+        archivosPublicos: proyecto.archivosPublicos,
         clienteCodigo: codigoClienteIdentidad
     });
     const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
@@ -1132,8 +1208,10 @@ export const getArchivosSeguimiento = async (req, res) => {
                     .lean()
                 : [];
 
+            const proyectoLinked = await resolveProyectoForTareaOnlyTracking(access, tarea);
             const archivos = await buildSeguimientoArchivosList({
                 tareaArchivos: tarea.archivos,
+                archivosPublicos: proyectoLinked?.archivosPublicos,
                 clienteCodigo
             });
             return res.status(200).json({ success: true, data: archivos });
@@ -1147,6 +1225,7 @@ export const getArchivosSeguimiento = async (req, res) => {
 
         const archivos = await buildSeguimientoArchivosList({
             tareaArchivos: ultimaTarea?.archivos,
+            archivosPublicos: proyecto.archivosPublicos,
             clienteCodigo
         });
 
@@ -1177,7 +1256,9 @@ export const getPagosSeguimiento = async (req, res) => {
                     .sort({ createdAt: -1 })
                     .lean()
                 : [];
+            const proyectoLinked = await resolveProyectoForTareaOnlyTracking(access, tarea);
             const receiptIndex = {
+                ...buildTaskReceiptIndex(proyectoLinked?.archivos),
                 ...buildTaskReceiptIndex(tarea?.archivos),
                 ...buildClientReceiptIndex(clientReceipts)
             };
@@ -1186,9 +1267,13 @@ export const getPagosSeguimiento = async (req, res) => {
             const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
                 followUpStatus: tarea.followUpStatus,
                 kanbanStage,
-                proyectoEstado: null
+                proyectoEstado: proyectoLinked?.estado ?? null
             });
-            const financials = await buildTrackingFinancials({ tarea, receiptIndex });
+            const financials = await buildTrackingFinancials({
+                proyecto: proyectoLinked,
+                tarea,
+                receiptIndex
+            });
 
             return res.status(200).json({
                 success: true,
@@ -1254,6 +1339,178 @@ export const logoutSeguimiento = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Sesion de seguimiento finalizada' });
 };
 
+const findTareaByPublicCodigo6 = async (codigo6) => {
+    const normalized = String(codigo6 || '').trim().toUpperCase();
+    if (normalized.length !== 6) return null;
+
+    const variants = [normalized, normalized.toLowerCase()];
+    return Tarea.findOne({ clienteId: { $in: variants } })
+        .sort({ updatedAt: -1 });
+};
+
+const createProyectoFromTarea = async (tarea, codigo6) => {
+    const nombreCliente = tarea.cliente?.nombre || tarea.cita?.nombreCliente || 'Cliente';
+    const proyecto = new Proyecto({
+        nombre: tarea.nombreProyecto || `Proyecto ${nombreCliente}`,
+        nombreCliente,
+        clienteId: codigo6,
+        clienteRef: tarea.clienteRef || null,
+        tipo: 'Cocina',
+        estado: 'cotizacion',
+        presupuestoTotal: Number(tarea.inversion) || 0,
+        pagos: tarea.pagos || undefined,
+        timelineActual: normalizeEtapaActualForTracking(tarea.etapaActual || tarea.etapa)
+    });
+    await proyecto.save();
+
+    tarea.clienteId = codigo6;
+    tarea.proyectoId = String(proyecto._id);
+    if (!tarea.nombreProyecto) {
+        tarea.nombreProyecto = proyecto.nombre;
+    }
+    await tarea.save();
+
+    return proyecto;
+};
+
+const createBaseProyectoAndTareaForCodigo = async (codigo6) => {
+    const tarea = new Tarea({
+        etapa: 'contrato',
+        estado: 'pendiente',
+        clienteId: codigo6,
+        nombreProyecto: `Proyecto ${codigo6}`,
+        cliente: {
+            nombre: 'Cliente',
+            correo: '',
+            telefono: '',
+            clienteId: codigo6,
+            codigo: codigo6
+        }
+    });
+    await tarea.save();
+
+    const proyecto = new Proyecto({
+        nombre: tarea.nombreProyecto,
+        nombreCliente: 'Cliente',
+        clienteId: codigo6,
+        clienteRef: tarea.clienteRef || null,
+        tipo: 'Cocina',
+        estado: 'cotizacion',
+        timelineActual: 'Diseño Aprobado'
+    });
+    await proyecto.save();
+
+    tarea.proyectoId = String(proyecto._id);
+    await tarea.save();
+
+    return { proyecto, tarea };
+};
+
+const ensureProyectoAndTareaForSeguimientoPatch = async (codigo6) => {
+    let access = await findEnabledAccessByCodigo6(codigo6);
+
+    let proyecto = await Proyecto.findOne({ clienteId: codigo6 }).sort({ updatedAt: -1 });
+    if (!proyecto && access?.projectId && mongoose.Types.ObjectId.isValid(String(access.projectId))) {
+        proyecto = await Proyecto.findById(access.projectId);
+    }
+
+    let tarea = null;
+    if (proyecto) {
+        tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+    }
+    if (!tarea) {
+        tarea = await findTareaByPublicCodigo6(codigo6);
+    }
+    if (!tarea && access?.taskId && mongoose.Types.ObjectId.isValid(String(access.taskId))) {
+        tarea = await Tarea.findById(access.taskId);
+    }
+
+    if (!proyecto && tarea) {
+        proyecto = await createProyectoFromTarea(tarea, codigo6);
+    }
+
+    if (!proyecto && !tarea) {
+        const created = await createBaseProyectoAndTareaForCodigo(codigo6);
+        proyecto = created.proyecto;
+        tarea = created.tarea;
+    }
+
+    if (proyecto && tarea && String(tarea.proyectoId || '') !== String(proyecto._id)) {
+        tarea.proyectoId = String(proyecto._id);
+        if (!tarea.clienteId) {
+            tarea.clienteId = codigo6;
+        }
+        await tarea.save();
+    }
+
+    if (proyecto && !proyecto.clienteId) {
+        proyecto.clienteId = codigo6;
+        await proyecto.save();
+    }
+
+    await upsertTrackingAccessFromProyecto(proyecto);
+    if (tarea) {
+        await upsertTrackingAccessFromTarea(tarea);
+    }
+    access = await findEnabledAccessByCodigo6(codigo6) || await bootstrapTrackingAccessByCodigo6(codigo6);
+
+    if (!tarea && proyecto) {
+        tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+    }
+
+    return { proyecto, tarea, access };
+};
+
+const mapSeguimientoPublicStatusError = (error) => {
+    if (!error) {
+        return { status: 500, message: 'Error al actualizar estatus público' };
+    }
+
+    const messageText = String(error.message || '').toLowerCase();
+    const isPayloadTooLarge = error.type === 'entity.too.large'
+        || error.status === 413
+        || error.statusCode === 413
+        || messageText.includes('request entity too large')
+        || error.name === 'PayloadTooLargeError';
+
+    if (isPayloadTooLarge) {
+        return {
+            status: 400,
+            message: 'El payload es demasiado grande. Reduce archivos embebidos en archivos/cotizaciones o usa URLs.'
+        };
+    }
+
+    if (error.statusCode === 400) {
+        return { status: 400, message: error.message };
+    }
+
+    if (error.name === 'ValidationError') {
+        return {
+            status: 400,
+            message: error.message || 'Datos inválidos para guardar el estatus público'
+        };
+    }
+
+    if (error.name === 'CastError') {
+        return {
+            status: 400,
+            message: 'Formato de datos inválido en la actualización de seguimiento'
+        };
+    }
+
+    if (error.code === 11000) {
+        return {
+            status: 409,
+            message: 'Conflicto al guardar el estatus público (registro duplicado)'
+        };
+    }
+
+    return {
+        status: 500,
+        message: error.message || 'Error al actualizar estatus público'
+    };
+};
+
 export const actualizarEstatusPublico = async (req, res) => {
     try {
         const rol = String(req.admin?.rol || '').toLowerCase();
@@ -1264,15 +1521,6 @@ export const actualizarEstatusPublico = async (req, res) => {
         const codigo6 = normalizeCodigoInput(req.params.codigo);
         if (codigo6.length !== 6) {
             return res.status(400).json({ success: false, message: 'Código de cliente inválido' });
-        }
-
-        const access = await findEnabledAccessByCodigo6(codigo6);
-        const projectId = access?.projectId && mongoose.Types.ObjectId.isValid(String(access.projectId))
-            ? String(access.projectId)
-            : null;
-        let proyecto = projectId ? await Proyecto.findById(projectId) : await Proyecto.findOne({ clienteId: codigo6 }).sort({ updatedAt: -1 });
-        if (!proyecto) {
-            return res.status(404).json({ success: false, message: 'Proyecto no encontrado' });
         }
 
         const {
@@ -1286,11 +1534,25 @@ export const actualizarEstatusPublico = async (req, res) => {
             preliminarCotizaciones
         } = req.body || {};
 
-        const tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+        const { proyecto, tarea: tareaResolved, access: accessResolved } = await ensureProyectoAndTareaForSeguimientoPatch(codigo6);
+        let tarea = tareaResolved;
+        if (!tarea) {
+            tarea = await Tarea.findOne({ proyectoId: String(proyecto._id) }).sort({ updatedAt: -1 });
+        }
+        if (!tarea) {
+            tarea = await findTareaByPublicCodigo6(codigo6);
+        }
+
         const normalizedEtapaActual = etapaActual !== undefined
             ? normalizeEtapaActualForTracking(etapaActual)
             : undefined;
-        const normalizedPagos = pagos !== undefined ? normalizePagosPayload(pagos) : null;
+        const normalizedPagos = pagos !== undefined
+            ? normalizePagosPayload(pagos, {
+                anticipo: previousPagoSlot(proyecto.pagos?.anticipo, tarea?.pagos?.anticipo),
+                segundoPago: previousPagoSlot(proyecto.pagos?.segundoPago, tarea?.pagos?.segundoPago),
+                liquidacion: previousPagoSlot(proyecto.pagos?.liquidacion, tarea?.pagos?.liquidacion)
+            })
+            : null;
 
         const allowedProjectStates = ['cotizacion', 'aprobado', 'en_produccion', 'instalando', 'completado'];
         if (estadoProyecto !== undefined) {
@@ -1344,15 +1606,31 @@ export const actualizarEstatusPublico = async (req, res) => {
             if (estadoProyecto !== undefined && String(estadoProyecto).trim().toLowerCase() === 'cliente confirmado') {
                 tarea.followUpStatus = 'confirmado';
             }
+            if (!tarea.proyectoId) {
+                tarea.proyectoId = String(proyecto._id);
+            }
+            if (!tarea.clienteId) {
+                tarea.clienteId = codigo6;
+            }
             await tarea.save();
+            await upsertTrackingAccessFromTarea(tarea);
         }
 
-        const refreshedAccess = access || await findEnabledAccessByCodigo6(codigo6);
+        await upsertTrackingAccessFromProyecto(proyecto);
+
+        const refreshedAccess = accessResolved
+            || await findEnabledAccessByCodigo6(codigo6)
+            || await bootstrapTrackingAccessByCodigo6(codigo6);
         const project = refreshedAccess ? await buildProjectSnapshot(refreshedAccess) : null;
-        return res.json({ success: true, message: 'Estatus público actualizado', data: { project } });
+        return res.status(200).json({ success: true, message: 'Estatus público actualizado', data: { project } });
     } catch (error) {
         console.error('Error actualizando estatus público:', error);
-        return res.status(500).json({ success: false, message: 'Error al actualizar estatus público' });
+        const mapped = mapSeguimientoPublicStatusError(error);
+        return res.status(mapped.status).json({
+            success: false,
+            message: mapped.message,
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
 };
 

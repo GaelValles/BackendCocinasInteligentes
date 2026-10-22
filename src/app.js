@@ -126,7 +126,8 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'captcha-token', 'x-captcha-token', 'captchatoken', 'cf-turnstile-response', 'turnstile-response', 'x-public-tracking', 'Cache-Control', 'cache-control', 'Pragma', 'pragma', 'Accept', 'X-Requested-With'],
     exposedHeaders: ['Content-Length', 'X-Ku%C3%BCche-Trace']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(cookieParser());
 // Normalize JSON responses into the frontend envelope
 app.use(responseWrapper);
@@ -217,7 +218,22 @@ app.use('/api/herrajes', herrajesRoutes);
 // Manejo de errores global
 app.use((err, req, res, next) => {
     console.error('Error no capturado en la aplicación:', err);
-    res.status(500).json({
+
+    const isPayloadTooLarge = err?.type === 'entity.too.large'
+        || err?.status === 413
+        || err?.statusCode === 413
+        || String(err?.message || '').toLowerCase().includes('request entity too large');
+
+    if (isPayloadTooLarge) {
+        return res.status(400).json({
+            success: false,
+            message: 'El cuerpo de la petición es demasiado grande. Reduce archivos embebidos o usa URLs públicas.',
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
+    }
+
+    const status = Number.isFinite(Number(err?.status)) ? Number(err.status) : 500;
+    res.status(status >= 400 && status < 600 ? status : 500).json({
         success: false,
         message: err?.message || 'Algo salió mal!',
         error: {
