@@ -7,6 +7,11 @@ import ClienteIdentidad from '../models/clienteIdentidad.model.js';
 import Tarea from '../models/tarea.model.js';
 import Proyecto from '../models/proyecto.model.js';
 import path from 'path';
+import {
+    buildExpedienteSeguimientoArchivos,
+    buildPanelArchivosWithSeguimiento,
+    mergeArchivoListsByUrl
+} from '../services/expedienteArchivos.service.js';
 
 const DEBUG = String(process.env.DEBUG_ARCHIVOS || 'false').toLowerCase() === 'true';
 
@@ -666,11 +671,19 @@ export const obtenerArchivosTarea = async (req, res) => {
     }
 
     const archivos = await ClienteArchivo.find(query).sort({ createdAt: -1 });
+    const seguimiento = await buildExpedienteSeguimientoArchivos({ tareaId, tarea: null });
+    const pagos = seguimiento.tarea?.pagos || seguimiento.proyecto?.pagos || null;
+    const archivosMerged = mergeArchivoListsByUrl(archivos, seguimiento.archivos, pagos);
 
     res.json({
       success: true,
       message: 'Archivos de tarea obtenidos',
-      data: archivos
+      data: archivosMerged,
+      archivosPublicos: seguimiento.archivosPublicos,
+      preliminarData: seguimiento.preliminarData,
+      preliminarCotizaciones: seguimiento.preliminarCotizaciones,
+      cotizacionFormalData: seguimiento.cotizacionFormalData,
+      cotizacionesFormales: seguimiento.cotizacionesFormales
     });
 
   } catch (error) {
@@ -709,24 +722,23 @@ export const obtenerArchivosPanel = async (req, res) => {
       query.nivel = nivelNormalizado;
     }
 
-    const archivos = await ClienteArchivo.find(query).sort({ createdAt: -1 });
-
-    // Agrupar por tipo
-    const archivosAgrupados = {};
-    archivos.forEach(archivo => {
-      if (!archivosAgrupados[archivo.tipo]) {
-        archivosAgrupados[archivo.tipo] = [];
-      }
-      archivosAgrupados[archivo.tipo].push(archivo);
+    const panelData = await buildPanelArchivosWithSeguimiento({
+      clienteCodigo: cliente.codigo,
+      nivel: query.nivel
     });
 
     res.json({
       success: true,
       message: 'Archivos del panel obtenidos',
       data: {
-        total: archivos.length,
-        porTipo: archivosAgrupados,
-        archivos
+        total: panelData.total,
+        porTipo: panelData.archivosAgrupados,
+        archivos: panelData.archivos,
+        archivosPublicos: panelData.archivosPublicos,
+        preliminarData: panelData.preliminarData,
+        preliminarCotizaciones: panelData.preliminarCotizaciones,
+        cotizacionFormalData: panelData.cotizacionFormalData,
+        cotizacionesFormales: panelData.cotizacionesFormales
       }
     });
 

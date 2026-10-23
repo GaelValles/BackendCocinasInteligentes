@@ -14,6 +14,7 @@ import {
     upsertTrackingAccessFromProyecto,
     upsertTrackingAccessFromTarea
 } from '../services/trackingAccess.service.js';
+import { mergeArchivosForPublicRead } from '../services/expedienteArchivos.service.js';
 
 const TRACKING_SCOPE = 'tracking:read';
 const rateLimitStore = new Map();
@@ -131,7 +132,7 @@ const excludeHardcodedTrackingFiles = (files = []) => (
 const isRealTrackingArchivo = (archivo = {}) => {
     if (isHardcodedTrackingFileRef(archivo)) return false;
     const url = String(archivo?.url || archivo?.src || '').trim();
-    return url.length > 0 && url !== '#';
+    return url.length > 0 && url !== '#' && url.toLowerCase().startsWith('https://');
 };
 
 const filterRealTrackingArchivos = (archivos = []) => (
@@ -148,17 +149,34 @@ const loadClienteArchivosForTracking = async (clienteCodigo = '') => {
         .lean();
 };
 
+const pagosFromTareaProyecto = (tarea, proyecto) => {
+    const slots = ['anticipo', 'segundoPago', 'liquidacion'];
+    const merged = {};
+    for (const slot of slots) {
+        merged[slot] = readStoredPagoSlot({
+            ...proyecto?.pagos?.[slot],
+            ...tarea?.pagos?.[slot]
+        });
+    }
+    return merged;
+};
+
 const buildSeguimientoArchivosList = async ({
     tareaArchivos = [],
     archivosPublicos = [],
-    clienteCodigo = ''
+    clienteCodigo = '',
+    pagos = null
 } = {}) => {
     const clienteArchivos = await loadClienteArchivosForTracking(clienteCodigo);
-    const merged = mergeTrackingFiles(
-        filterRealTrackingArchivos(archivosPublicos),
-        filterRealTrackingArchivos(tareaArchivos),
-        filterRealTrackingArchivos(clienteArchivos)
-    );
+    const merged = mergeArchivosForPublicRead({
+        groups: [
+            filterRealTrackingArchivos(archivosPublicos),
+            filterRealTrackingArchivos(tareaArchivos),
+            filterRealTrackingArchivos(clienteArchivos)
+        ],
+        pagos,
+        normalizeItem: normalizeTrackingFile
+    });
     return excludeHardcodedTrackingFiles(merged);
 };
 
@@ -429,25 +447,6 @@ const normalizeTrackingFile = (archivo = {}) => {
         src: url,
         name: nombre
     };
-};
-
-const mergeTrackingFiles = (...fileGroups) => {
-    const merged = [];
-    const seen = new Set();
-
-    for (const group of fileGroups) {
-        for (const raw of (Array.isArray(group) ? group : [])) {
-            const item = normalizeTrackingFile(raw);
-            if (!item.url) continue;
-
-            const dedupKey = `${item.tipo}::${item.url}`;
-            if (seen.has(dedupKey)) continue;
-            seen.add(dedupKey);
-            merged.push(item);
-        }
-    }
-
-    return merged;
 };
 
 const buildTaskReceiptIndex = (archivos = []) => {
@@ -953,7 +952,8 @@ const buildProjectSnapshot = async (access) => {
         const archivos = await buildSeguimientoArchivosList({
             tareaArchivos: tarea.archivos,
             archivosPublicos: proyectoLinked?.archivosPublicos,
-            clienteCodigo: codigoClienteIdentidad
+            clienteCodigo: codigoClienteIdentidad,
+            pagos
         });
         const cotizaciones = resolveTrackingCotizaciones(tarea);
         const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
@@ -1008,19 +1008,21 @@ const buildProjectSnapshot = async (access) => {
         ...buildClientReceiptIndex(clientReceipts)
     };
 
-    const archivos = await buildSeguimientoArchivosList({
-        tareaArchivos: ultimaTarea?.archivos,
-        archivosPublicos: proyecto.archivosPublicos,
-        clienteCodigo: codigoClienteIdentidad
-    });
-    const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
-    const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
-    const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
     const { pagos, inversion, totalPagado, saldoPendiente } = await buildTrackingFinancials({
         proyecto,
         tarea: ultimaTarea,
         receiptIndex
     });
+
+    const archivos = await buildSeguimientoArchivosList({
+        tareaArchivos: ultimaTarea?.archivos,
+        archivosPublicos: proyecto.archivosPublicos,
+        clienteCodigo: codigoClienteIdentidad,
+        pagos
+    });
+    const cotizaciones = resolveTrackingCotizaciones(ultimaTarea);
+    const cotizacionPreliminarImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('preliminar'))?.url || '';
+    const cotizacionFormalImage = archivos.find((a) => String(a.nombre).toLowerCase().includes('formal'))?.url || '';
 
     const kanbanStage = ultimaTarea?.etapa || '';
     const kanbanFollowUpStatus = resolveKanbanFollowUpStatusForTracking({
@@ -1209,10 +1211,12 @@ export const getArchivosSeguimiento = async (req, res) => {
                 : [];
 
             const proyectoLinked = await resolveProyectoForTareaOnlyTracking(access, tarea);
+            const pagosForDedup = pagosFromTareaProyecto(tarea, proyectoLinked);
             const archivos = await buildSeguimientoArchivosList({
                 tareaArchivos: tarea.archivos,
                 archivosPublicos: proyectoLinked?.archivosPublicos,
-                clienteCodigo
+                clienteCodigo,
+                pagos: pagosForDedup
             });
             return res.status(200).json({ success: true, data: archivos });
         }
@@ -1223,10 +1227,12 @@ export const getArchivosSeguimiento = async (req, res) => {
 
         const clienteCodigo = String(proyecto?.clienteId || access?.codigo6 || ultimaTarea?.clienteId || '').trim().toUpperCase();
 
+        const pagosForDedup = pagosFromTareaProyecto(ultimaTarea, proyecto);
         const archivos = await buildSeguimientoArchivosList({
             tareaArchivos: ultimaTarea?.archivos,
             archivosPublicos: proyecto.archivosPublicos,
-            clienteCodigo
+            clienteCodigo,
+            pagos: pagosForDedup
         });
 
         return res.status(200).json({

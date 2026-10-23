@@ -2,6 +2,11 @@ import Tarea from '../models/tarea.model.js';
 import Citas from '../models/citas.model.js';
 import Proyecto from '../models/proyecto.model.js';
 import mongoose from 'mongoose';
+import {
+    mapArchivosPublicosForResponse,
+    mergeExpedienteHttpsArchivos,
+    resolveTrackingCotizacionesFromTarea
+} from '../services/expedienteArchivos.service.js';
 
 const ETAPAS_VALIDAS = ['citas', 'disenos', 'cotizacion', 'contrato'];
 const ROLES_OPERATIVOS = ['ingeniero', 'empleado', 'empleado_general', 'staff'];
@@ -80,6 +85,14 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = nul
         : null;
     const { totalPagado } = calculatePagosSummary(pagos);
     const saldoPendiente = Math.max(inversion - totalPagado, 0);
+    const cotizaciones = resolveTrackingCotizacionesFromTarea(item);
+    const pagosForArchivos = item?.pagos || proyecto?.pagos || null;
+    const archivosPublicos = mapArchivosPublicosForResponse(proyecto?.archivosPublicos, pagosForArchivos);
+    const archivosMerged = mergeExpedienteHttpsArchivos({
+        archivosPublicos: proyecto?.archivosPublicos,
+        tareaArchivos: item.archivos,
+        pagos: pagosForArchivos
+    });
 
     return {
     id: String(item._id),
@@ -142,17 +155,17 @@ const mapTask = (item, baseUrl = '', citaContextById = new Map(), proyecto = nul
     pagos,
     totalPagado,
     saldoPendiente,
-    archivos: Array.isArray(item.archivos)
-        ? item.archivos.map((archivo) => ({
-            id: archivo?.id || null,
-            nombre: archivo?.nombre || '',
-            tipo: archivo?.tipo || 'otro',
-            nivel: ['preliminar', 'final'].includes(String(archivo?.nivel || '').toLowerCase())
-                ? String(archivo.nivel).toLowerCase()
-                : (archivo?.nivel ?? null),
-            url: normalizeFileUrl(archivo?.url || '', baseUrl)
-        }))
-        : [],
+    archivos: archivosMerged.map((archivo) => ({
+        ...archivo,
+        url: normalizeFileUrl(archivo.url || '', baseUrl),
+        src: normalizeFileUrl(archivo.url || '', baseUrl)
+    })),
+    archivosPublicos: archivosPublicos.map((archivo) => ({
+        ...archivo,
+        url: normalizeFileUrl(archivo.url || '', baseUrl),
+        src: normalizeFileUrl(archivo.url || '', baseUrl)
+    })),
+    ...cotizaciones,
     cita: sourceType === 'cita'
         ? {
             fechaAgendada: item.cita?.fechaAgendada || null,
@@ -219,12 +232,42 @@ const getColumn = (etapa) => async (req, res) => {
         const projectIds = [...new Set(data
             .map((item) => String(item.proyectoId || ''))
             .filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+        const clienteCodigos = [...new Set(data
+            .map((item) => String(item.clienteId || citaContextById.get(String(item.sourceId || item.sourceCitaId || ''))?.clienteId || '').trim().toUpperCase())
+            .filter((codigo) => codigo.length === 6))];
+
+        const proyectoSelect = '_id clienteId tipo fechaContrato fechaEntrega presupuestoTotal pagos archivosPublicos';
         const proyectos = projectIds.length
             ? await Proyecto.find({ _id: { $in: projectIds } })
-                .select('_id tipo fechaContrato fechaEntrega presupuestoTotal pagos')
+                .select(proyectoSelect)
                 .lean()
             : [];
+        const proyectosByCliente = clienteCodigos.length
+            ? await Proyecto.find({ clienteId: { $in: clienteCodigos } })
+                .select(proyectoSelect)
+                .sort({ updatedAt: -1 })
+                .lean()
+            : [];
+
         const proyectosById = new Map(proyectos.map((proyecto) => [String(proyecto._id), proyecto]));
+        const proyectoByClienteId = new Map();
+        for (const proyecto of proyectosByCliente) {
+            const codigo = String(proyecto?.clienteId || '').trim().toUpperCase();
+            if (codigo && !proyectoByClienteId.has(codigo)) {
+                proyectoByClienteId.set(codigo, proyecto);
+            }
+        }
+
+        const resolveProyectoForKanbanTask = (item) => {
+            const byProjectId = proyectosById.get(String(item.proyectoId || ''));
+            if (byProjectId) return byProjectId;
+
+            const citaContext = item.sourceType === 'cita' || item.sourceCitaId
+                ? citaContextById.get(String(item.sourceId || item.sourceCitaId || ''))
+                : null;
+            const codigo = String(item.clienteId || citaContext?.clienteId || '').trim().toUpperCase();
+            return codigo ? (proyectoByClienteId.get(codigo) || null) : null;
+        };
 
         return res.json({
             success: true,
@@ -232,7 +275,7 @@ const getColumn = (etapa) => async (req, res) => {
                 item,
                 baseUrl,
                 citaContextById,
-                proyectosById.get(String(item.proyectoId || '')) || null
+                resolveProyectoForKanbanTask(item)
             ))
         });
     } catch (err) {
